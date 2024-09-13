@@ -1,5 +1,9 @@
-use super::command::Command;
+use core::str;
+use std::io::Cursor;
 
+use bytes::Buf;
+
+use super::command::Command;
 
 #[derive(Debug)]
 pub struct Message {
@@ -8,18 +12,28 @@ pub struct Message {
     pub params: Vec<String>,
 }
 
-impl TryFrom<&str> for Message {
-    type Error = ();
+#[derive(Debug)]
+pub enum Error {
+    Incomplete,
+    LengthExceeded,
+    Generic,
+    Invalid,
+}
 
-    fn try_from(msg: &str) -> Result<Self, Self::Error> {
-        let has_prefix: bool = msg.starts_with(":");
-        let mut msg_parts: Vec<String> = msg.split(" ").map(|s| s.to_string()).collect();
+impl Message {
+    pub fn parse(src: &mut Cursor<&[u8]>) -> Result<Message, Error> {
+        let msg = get_message(src)?;
+        let has_prefix = msg.starts_with(b":");
+        let mut msg_parts: Vec<String> = match str::from_utf8(msg) {
+            Ok(m) => m.trim().split(" ").map(|s| s.to_string()).collect::<Vec<String>>(),
+            Err(_) => return Err(Error::Generic),
+        };
         msg_parts.reverse();
 
         let prefix: Option<String>;
         if has_prefix {
             prefix = match msg_parts.pop() {
-                None => return Result::Err(()),
+                None => return Err(Error::Incomplete),
                 Some(p) => Some(p),
             }
         } else {
@@ -27,22 +41,69 @@ impl TryFrom<&str> for Message {
         }
 
         let command: Command = match msg_parts.pop() {
-            None => return Result::Err(()),
             Some(c) => {
-                match Command::try_from(&c[..]) {
+                match Command::parse(&c[..]) {
                     Ok(command) => command,
-                    Err(_) => return Result::Err(()),
+                    Err(_) => return Err(Error::Invalid),
                 }
             },
+            None => return Err(Error::Invalid),
         };
 
         if msg_parts.len() > 15 {
-            return Err(())
+            return Err(Error::Invalid);
         }
-        let mut params: Vec<String> = Vec::new();
-        for part in msg_parts {
-            params.insert(0, part);
-        }
-        return Ok(Message { prefix, command, params });
+        msg_parts.reverse();
+        // for part in msg_parts {
+        //     params.insert(0, part);
+        // }
+
+        return Ok(Message { prefix, command, params: msg_parts });
     }
+
+    pub fn check(src: &mut Cursor<&[u8]>) -> Result<(), Error> {
+        if !src.has_remaining() {
+            return Err(Error::Incomplete)
+        }
+        return Ok(());
+    }
+}
+
+// fn get_part<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
+//     let start = src.position() as usize;
+//     let end = src.get_ref().len() - 1;
+//
+//     for i in start..end {
+//         if src.get_ref()[i] == b' ' or {
+//             src.set_position((i+1)as u64);
+//             return Ok(&src.get_ref()[start..i-1]);
+//         }
+//     }
+//
+//     return Err(Error::Incomplete);
+// }
+
+fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
+    let start = src.position() as usize;
+    let end = src.get_ref().len() - 1;
+
+    for i in start..end {
+        // if src.get_ref()[i] == b'\r' && src.get_ref()[i+i] == b'\n' {
+        //     if (i+1) - start > 512 {
+        //         return Err(Error::LengthExceeded);
+        //     }
+        //     src.set_position((i+2)as u64);
+        //     return Ok(&src.get_ref()[start..i+1]);
+        // }
+
+        if src.get_ref()[i] == b'\n' {
+            // if i - start > 512 {
+            //     return Err(Error::LengthExceeded);
+            // }
+            // src.set_position((i+1)as u64);
+            return Ok(&src.get_ref()[start..i]);
+        }
+    }
+
+    return Err(Error::Incomplete);
 }

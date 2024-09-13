@@ -1,9 +1,9 @@
+use tokio::net::{TcpListener, TcpStream};
+use std::net::SocketAddr;
 use log::info;
-use tokio::net::TcpListener;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod core;
-use core::message::Message;
+use core::connection::Connection;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,31 +19,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Server started");
 
     loop {
-        let (mut socket, _) = listener.accept().await?;
+        let (stream, _addr): (TcpStream, SocketAddr) = listener.accept().await.unwrap();
 
         tokio::spawn(async move {
-            let mut buf = [0; 1024];
-
-            loop {
-
-                let n = match socket.read(&mut buf).await {
-                    Ok(n) if n == 0 => return,
-                    Ok(n) => n,
-                    Err(e) => {
-                        eprintln!("failed to read from socket; err = {:?}", e);
-                        return;
-                    }
-                };
-
-                // Write the data back
-                let buf_str = std::str::from_utf8(&buf).unwrap().split_once("\n").unwrap().0;
-                let message = Message::try_from(buf_str);
-                info!("{:?}", message);
-                if let Err(e) = socket.write_all(&buf[0..n]).await {
-                    eprintln!("failed to write to socket; err = {:?}", e);
-                    return;
-                }
-            }
+            process(stream).await;
         });
     }
+}
+
+
+async fn process(stream: TcpStream) {
+
+    let mut conn: Connection = Connection::new(stream);
+    loop {
+        let message = match conn.read_message().await {
+            Ok(m) => m, 
+            Err(_) => None,
+        };
+        info!("{:?}", message);
+    }
+
+
+    // loop {
+    //     let n = match conn.stream.read_buf(&mut conn.buffer).await {
+    //         Ok(n) if n == 0 => return,
+    //         Ok(n) => n,
+    //         Err(e) => {
+    //             eprintln!("failed to read from socket; err = {:?}", e);
+    //             return;
+    //         }
+    //     };
+    //
+    //     // Write the data back
+    //     if let Err(e) = conn.stream.write_all(&conn.buffer[0..n]).await {
+    //         eprintln!("failed to write to socket; err = {:?}", e);
+    //         return;
+    //     }
+    //     conn.buffer.clear();
+    // }
 }

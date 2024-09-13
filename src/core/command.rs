@@ -11,11 +11,9 @@ pub enum Command {
     // MODE,
 }
 
-impl TryFrom<&str> for Command{
-    type Error = ();
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
+impl Command {
+    pub fn parse(c: &str) -> Result<Command, ()> {
+        match c {
             "PASS" => Ok(Command::PASS),
             "SERVER" => Ok(Command::SERVER),
             "NICK" => Ok(Command::NICK),
@@ -23,7 +21,6 @@ impl TryFrom<&str> for Command{
         }
     }
 }
-
 
 #[derive(Debug)]
 pub enum ErrReply{
