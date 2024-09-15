@@ -1,9 +1,10 @@
-use tokio::net::{TcpListener, TcpStream};
-use std::net::SocketAddr;
+use tokio::{io::AsyncReadExt, net::{TcpListener, TcpStream}};
+use std::{io::Cursor, net::SocketAddr};
 use log::info;
 
 mod core;
-use core::connection::Connection;
+use core::{command::Command, connection::Connection, message::{Error, Message}};
+use core::message::get_message;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,30 +20,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Server started");
 
     loop {
-        let (stream, _addr): (TcpStream, SocketAddr) = listener.accept().await.unwrap();
+        let (stream, addr): (TcpStream, SocketAddr) = listener.accept().await.unwrap();
 
         tokio::spawn(async move {
-            process(stream).await;
+            process(stream, addr).await;
         });
     }
 }
 
 
-async fn process(stream: TcpStream) {
+async fn process(stream: TcpStream, address: SocketAddr) {
 
-    let mut conn: Connection = Connection::new(stream);
+    let mut conn: Connection = Connection::new(stream, address);
+    info!("{:} connected", conn.address);
+
+    // while let Ok(res) = conn.read_message().await {
+    //     info!("{:?}", res);
+    // }
+
     loop {
-        let message = match conn.read_message().await {
-            Ok(m) => m, 
-            Err(_) => None,
+        match conn.read_message().await {
+            Ok(m) => info!("{:?}", m),
+            Err(_e) => {
+                info!("{:} exited", conn.address);
+                return;
+            },
         };
-        info!("{:?}", message);
     }
 
 
     // loop {
-    //     let n = match conn.stream.read_buf(&mut conn.buffer).await {
-    //         Ok(n) if n == 0 => return,
+    //     let _n = match conn.stream.read_buf(&mut conn.buffer).await {
+    //         Ok(0) => { info!("{:} exited", conn.address);
+    //             return;
+    //         },
     //         Ok(n) => n,
     //         Err(e) => {
     //             eprintln!("failed to read from socket; err = {:?}", e);
@@ -50,11 +61,13 @@ async fn process(stream: TcpStream) {
     //         }
     //     };
     //
-    //     // Write the data back
-    //     if let Err(e) = conn.stream.write_all(&conn.buffer[0..n]).await {
-    //         eprintln!("failed to write to socket; err = {:?}", e);
-    //         return;
-    //     }
+    //     let mut cursor = Cursor::new(&conn.buffer[..]);
+    //     cursor.set_position(0);
+    //     match Message::parse(&mut cursor) {
+    //         Ok(m) => info!("{:?}", m),
+    //         Err(_e) => (),
+    //     };
+    //     info!("{:?}", &conn.buffer[..]);
     //     conn.buffer.clear();
     // }
 }

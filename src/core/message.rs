@@ -32,12 +32,12 @@ impl Message {
 
         let prefix: Option<String>;
         if has_prefix {
-            prefix = match msg_parts.pop() {
+            match msg_parts.pop() {
                 None => return Err(Error::Incomplete),
-                Some(p) => Some(p),
+                Some(p) => prefix = Some(p),
             }
         } else {
-            prefix = None
+            prefix = None;
         }
 
         let command: Command = match msg_parts.pop() {
@@ -54,38 +54,21 @@ impl Message {
             return Err(Error::Invalid);
         }
         msg_parts.reverse();
-        // for part in msg_parts {
-        //     params.insert(0, part);
-        // }
 
-        return Ok(Message { prefix, command, params: msg_parts });
+        Ok(Message { prefix, command, params: msg_parts })
     }
 
     pub fn check(src: &mut Cursor<&[u8]>) -> Result<(), Error> {
         if !src.has_remaining() {
             return Err(Error::Incomplete)
         }
-        return Ok(());
+        Ok(())
     }
 }
 
-// fn get_part<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
-//     let start = src.position() as usize;
-//     let end = src.get_ref().len() - 1;
-//
-//     for i in start..end {
-//         if src.get_ref()[i] == b' ' or {
-//             src.set_position((i+1)as u64);
-//             return Ok(&src.get_ref()[start..i-1]);
-//         }
-//     }
-//
-//     return Err(Error::Incomplete);
-// }
-
-fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
+pub fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
     let start = src.position() as usize;
-    let end = src.get_ref().len() - 1;
+    let end = src.get_ref().len();
 
     for i in start..end {
         // if src.get_ref()[i] == b'\r' && src.get_ref()[i+i] == b'\n' {
@@ -97,13 +80,13 @@ fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
         // }
 
         if src.get_ref()[i] == b'\n' {
-            // if i - start > 512 {
-            //     return Err(Error::LengthExceeded);
-            // }
-            // src.set_position((i+1)as u64);
+            if i - start > 512 {
+                return Err(Error::LengthExceeded);
+            }
+            src.set_position((i+1)as u64);
             return Ok(&src.get_ref()[start..i]);
         }
     }
 
-    return Err(Error::Incomplete);
+    Err(Error::Incomplete)
 }
