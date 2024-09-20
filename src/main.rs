@@ -37,6 +37,7 @@ async fn process(stream: TcpStream, address: SocketAddr) {
     // while let Ok(res) = conn.read_message().await {
     //     info!("{:?}", res);
     // }
+    // info!("{:} exited", conn.address);
 
     loop {
         match conn.read_message().await {
