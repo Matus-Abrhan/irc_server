@@ -9,7 +9,7 @@ use super::command::Command;
 pub struct Message {
     pub prefix: Option<String>,
     pub command: Command,
-    pub params: Vec<String>,
+    // pub params: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -42,7 +42,7 @@ impl Message {
 
         let command: Command = match msg_parts.pop() {
             Some(c) => {
-                match Command::parse(&c[..]) {
+                match Command::parse(&prefix, c, &mut msg_parts) {
                     Ok(command) => command,
                     Err(_) => return Err(Error::Invalid),
                 }
@@ -50,12 +50,7 @@ impl Message {
             None => return Err(Error::Invalid),
         };
 
-        if msg_parts.len() > 15 {
-            return Err(Error::Invalid);
-        }
-        msg_parts.reverse();
-
-        Ok(Message { prefix, command, params: msg_parts })
+        Ok(Message { prefix, command})
     }
 
     pub fn check(src: &mut Cursor<&[u8]>) -> Result<(), Error> {
