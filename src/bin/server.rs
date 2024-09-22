@@ -2,8 +2,10 @@ use tokio::net::{TcpListener, TcpStream};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use log::info;
 
-mod core;
-use core::connection::Connection;
+// mod core;
+// use core::connection::Connection;
+use irc_server::irc_core::connection::Connection;
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
