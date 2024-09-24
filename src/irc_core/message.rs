@@ -1,6 +1,6 @@
+use std::fmt;
 use core::str;
 use std::io::Cursor;
-
 use bytes::Buf;
 
 use super::command::Command;
@@ -84,4 +84,12 @@ pub fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
     }
 
     Err(Error::Incomplete)
+}
+
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+        // or, alternatively:
+        // fmt::Debug::fmt(self, f)
+    }
 }
