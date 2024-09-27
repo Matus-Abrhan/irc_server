@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
-use log::{error, info, warn};
+use log::{info, warn};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{self, Duration};
 
 use crate::irc_core::connection::Connection;
+use crate::irc_core::message::Message;
 
-type Db = Arc<Mutex<HashMap<String, String>>>;
+type Db = Arc<tokio::sync::Mutex<Vec<String>>>;
 
 const BACKOFF_LIMIT: u64 = 64;
 
@@ -58,6 +59,13 @@ impl Listener {
 
 impl Handler {
     async fn run(&mut self) -> Result<(), ()> {
+
+        let db = self.db.lock().await;
+        for msg in db.iter() {
+            self.connection.stream.write_all(msg.as_bytes()).await.unwrap();
+        }
+        drop(db);
+
         loop {
             let message = match self.connection.read_message().await {
                 Ok(m) => m,
@@ -66,14 +74,21 @@ impl Handler {
                 },
             };
             if let Some(m) = message {
+                let mut db = self.db.lock().await;
+                let mut msg = m.to_string();
+                msg.push('\n');
+                db.push(msg);
+                drop(db);
+
                 self.connection.stream.write_all(m.to_string().as_bytes()).await.unwrap();
             }
         }
+
     }
 }
 
 pub async fn run(listener: TcpListener) -> Result<(), ()> {
-    let mut server = Listener { listener, db: Arc::new(Mutex::new(HashMap::new()))};
+    let mut server = Listener { listener, db: Arc::new(tokio::sync::Mutex::new(Vec::new()))};
     server.run().await?;
     Ok(())
 }
