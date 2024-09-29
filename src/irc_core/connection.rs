@@ -30,6 +30,7 @@ impl Connection {
                 Ok(_n) => (),
                 Err(e) => {
                     warn!("{:}", e);
+                    warn!("exited");
                     return Err(IRCError::ClientExited);
                 },
             };
@@ -67,7 +68,7 @@ impl Connection {
                 Ok(Some(message))
             },
             Err(IRCError::Incomplete) => Ok(None),
-            Err(_e) => Err(()),
+            Err(e) => Err(e),
         }
     }
 }

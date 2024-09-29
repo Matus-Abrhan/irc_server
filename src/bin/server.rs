@@ -18,7 +18,7 @@ async fn main() -> Result<(), ()> {
         Err(e) => panic!("{}", e),
     };
     info!("Server started at {:}", server_addr);
-    run(listener).await
+    run(listener, tokio::signal::ctrl_c()).await
 }
 
 
