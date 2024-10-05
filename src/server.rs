@@ -7,7 +7,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{self, Duration};
 
-use crate::irc_core::connection::Connection;
+use crate::irc_core::connection::{Connection, RegistrationState};
+use crate::irc_core::command::Command;
+use crate::irc_core::message::Message;
 use crate::irc_core::message_errors::IRCError;
 
 type Db = Arc<tokio::sync::Mutex<Vec<String>>>;
@@ -83,21 +85,46 @@ impl Handler {
         drop(db);
 
         while !self.shutdown.is_shutdown() {
-            // let message = match self.connection.read_message().await {
-            //     Ok(m) => m,
-            //     Err(_e) => {
-            //         return Err(());
-            //     },
-            // };
             let received = tokio::select! {
                 res = self.connection.read_message() => res,
                 _ = self.shutdown.recv() => {
-                    return Ok(());
+                    self.connection.stream.write_all("server quit\n".as_bytes()).await.unwrap();
+                    return Err(());
                 }
             };
+            // info!("{:?}", received);
+            self.connection.buffer.clear();
             match received {
                 Ok(maby_message) => {
                     if let Some(m) = maby_message {
+                        match &m.command {
+                            Command::Pass{password} => {
+                                match self.connection.state.registration_state {
+                                    RegistrationState::None => {
+                                        if password == "blabla" { // Match connection password
+                                            self.connection.state.registration_state = RegistrationState::PassReceived;
+                                        } else {
+                                            warn!("{:?}", IRCError::PasswdMismatch);
+                                        }
+                                    },
+                                    _ => {
+                                        warn!("{:?}", IRCError::AlreadyRegistred);
+                                    }
+                                }
+                            },
+                            Command::Nick{nickname} => {
+                                match self.connection.state.registration_state {
+                                    RegistrationState::PassReceived => {
+                                        // TODO: check if in use
+                                        self.connection.state.registration_state = RegistrationState::NickReceived;
+                                        self.connection.state.nick = nickname.to_string();
+                                    },
+                                    _ => !todo!()
+                                }
+                            },
+                            _ => todo!()
+
+                        }
                         let mut msg = m.to_string();
                         msg.push('\n');
                         self.connection.stream.write_all(msg.as_bytes()).await.unwrap();
@@ -110,25 +137,14 @@ impl Handler {
                 Err(err) => {
                     match err {
                         IRCError::ClientExited => {
-                            warn!("{:?}", err);
                             return Err(());
                         },
                         _ => {
-                            warn!("{:?}", err)
+                            warn!("{:?}", err);
                         },
                     }
                 },
             }
-
-            // if let Some(m) = received {
-            //     let mut msg = m.to_string();
-            //     msg.push('\n');
-            //     self.connection.stream.write_all(msg.as_bytes()).await.unwrap();
-            //
-            //     let mut db = self.db.lock().await;
-            //     db.push(msg);
-            //     drop(db);
-            // }
         }
         Ok(())
     }
@@ -168,14 +184,13 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
         _ = server.run() => {}
         _ = shutdown => {}
     }
-    // server.run().await?;
+
     let Listener{
         mut shutdown_complete_rx,
         shutdown_complete_tx,
         notify_shutdown,
         ..
     } = server;
-
     drop(notify_shutdown);
     drop(shutdown_complete_tx);
     let _ = shutdown_complete_rx.recv().await;
@@ -196,5 +211,4 @@ pub async fn start_server() -> SocketAddr {
 
     server_addr
 }
-
 

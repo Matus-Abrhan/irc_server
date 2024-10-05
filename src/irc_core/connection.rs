@@ -7,12 +7,25 @@ use log::{info, warn};
 use crate::irc_core::message::Message;
 use crate::irc_core::message_errors::IRCError;
 
+pub enum RegistrationState {
+    None = 0,
+    PassReceived = 1,
+    NickReceived = 2,
+    UserReceived = 3,
+    Registered = 4,
+}
+
+pub struct State {
+    pub registration_state: RegistrationState,
+    pub nick: String
+}
+
 pub struct Connection {
     pub stream: TcpStream,
     pub address: SocketAddr,
     pub buffer: BytesMut,
+    pub state: State,
 }
-
 
 impl Connection {
     pub fn new(stream: TcpStream, address: SocketAddr) -> Connection {
@@ -20,6 +33,7 @@ impl Connection {
             stream,
             address,
             buffer: BytesMut::with_capacity(1024 * 2),
+            state: State{registration_state: RegistrationState::None, nick: String::new()}
         }
     }
 
@@ -30,14 +44,19 @@ impl Connection {
                 Ok(_n) => (),
                 Err(e) => {
                     warn!("{:}", e);
-                    warn!("exited");
                     return Err(IRCError::ClientExited);
                 },
             };
 
             match self.parse_frame() {
                 Ok(m) => return Ok(m),
-                Err(_e) => (),
+                Err(e) => {
+                    match e {
+                        // IRCError::Incomplete => (),
+                        IRCError::SilentDiscard => (),
+                        _ => return Err(e),
+                    }
+                },
             }
 
             info!("{:?}", &self.buffer[..]);
@@ -64,7 +83,7 @@ impl Connection {
                     Err(e) => return Err(e),
                 };
                 self.buffer.advance(len);
-                self.buffer.clear();
+                // self.buffer.clear();
                 Ok(Some(message))
             },
             Err(IRCError::Incomplete) => Ok(None),

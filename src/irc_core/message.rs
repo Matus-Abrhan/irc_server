@@ -10,7 +10,6 @@ use crate::irc_core::message_errors::IRCError;
 pub struct Message {
     pub prefix: Option<String>,
     pub command: Command,
-    // pub params: Vec<String>,
 }
 
 impl Message {

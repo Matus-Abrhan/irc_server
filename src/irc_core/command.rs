@@ -9,6 +9,7 @@ pub enum Command {
     User{user: String, mode: String, unused: String, realname: String},
     Ping{token: String},
     Pong{server: Option<String>, token: String},
+    Oper{name: String, password: String},
     Quit{reason: Option<String>},
     Error{reason: String},
 }
@@ -27,7 +28,7 @@ impl Command {
             "NICK" => {
                 let nickname = match options.pop() {
                     Some(res) => res,
-                    None => return Err(IRCError::SilentDiscard),
+                    None => return Err(IRCError::NoNicknameGiven),
                 };
                 Ok(Command::Nick{nickname})
             },
@@ -47,6 +48,34 @@ impl Command {
                 };
                 options.reverse();
                 Ok(Command::User{user, mode, unused, realname: options.join(" ")})
+            },
+
+            "PING" => {
+                let token = options.pop().ok_or(IRCError::NeedMoreParams)?;
+                Ok(Command::Ping{token})
+            },
+
+            "PONG" => {
+                let mut server: Option<String> = None;
+                if options.len() > 1 {
+                    server = Some(options.pop().ok_or(IRCError::SilentDiscard)?);
+                }
+                let token = options.pop().ok_or(IRCError::SilentDiscard)?;
+                Ok(Command::Pong{server, token})
+            },
+
+            "OPER" => {
+                // let name = options.pop().ok_or(IRCError::NeedMoreParams)?;
+                let name = match options.pop() {
+                    Some(res) => res,
+                    None => return Err(IRCError::NeedMoreParams),
+                };
+                // let password = options.pop().ok_or(IRCError::NeedMoreParams)?;
+                let password = match options.pop() {
+                    Some(res) => res,
+                    None => return Err(IRCError::NeedMoreParams),
+                };
+                Ok(Command::Oper{name, password})
             },
 
             "QUIT" => {
