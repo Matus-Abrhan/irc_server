@@ -3,16 +3,21 @@ use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use irc_server::server::start_server;
 
 #[tokio::test]
-async fn test_pass() {
+async fn test_ping() {
     let addr = start_server().await;
 
     let mut stream = TcpStream::connect(addr).await.unwrap();
-    stream.write_all(b":prefix PASS passwd abc def a b c d e f g\n").await.unwrap();
+    stream.write_all(b":prefix PING token\n").await.unwrap();
 
-    let mut response = [0; 73];
+    let mut response = [0; 83];
     stream.read_exact(&mut response).await.unwrap();
     assert_eq!(
-        "Message { prefix: Some(\":prefix\"), command: Pass { password: \"passwd\" } }".as_bytes(),
+        "Message { prefix: Some(\":Server\"), command: Pong { server: None, token: \"token\" } }".as_bytes(),
         &response
     );
+}
+
+#[tokio::test]
+async fn test_register() {
+
 }

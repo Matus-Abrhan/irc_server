@@ -16,7 +16,8 @@ type Db = Arc<tokio::sync::Mutex<Vec<String>>>;
 const BACKOFF_LIMIT: u64 = 64;
 
 struct Listener {
-    db: Db,
+    messages: Db,
+    nicks: Db,
     listener: TcpListener,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
@@ -24,7 +25,8 @@ struct Listener {
 }
 
 struct Handler {
-    db: Db,
+    messages: Db,
+    nicks: Db,
     connection: Connection,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
@@ -41,8 +43,10 @@ impl Listener {
         loop {
             let (stream, address) = self.accept().await?;
             let mut handler = Handler{
-                db: self.db.clone(),
-                connection: Connection::new(stream, address), 
+                // db: self.db.clone(),
+                messages: self.messages.clone(),
+                nicks: self.nicks.clone(),
+                connection: Connection::new(stream, address),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
             };
@@ -77,12 +81,11 @@ impl Listener {
 impl Handler {
     async fn run(&mut self) -> Result<(), ()> {
 
-
-        let db = self.db.lock().await;
-        for msg in db.iter() {
+        let messages = self.messages.lock().await;
+        for msg in messages.iter() {
             self.connection.stream.write_all(msg.as_bytes()).await.unwrap();
         }
-        drop(db);
+        drop(messages);
 
         while !self.shutdown.is_shutdown() {
             let received = tokio::select! {
@@ -92,46 +95,27 @@ impl Handler {
                     return Err(());
                 }
             };
-            // info!("{:?}", received);
             self.connection.buffer.clear();
-            match received {
+            let maby_response: Option<String> = match received {
                 Ok(maby_message) => {
-                    if let Some(m) = maby_message {
-                        match &m.command {
-                            Command::Pass{password} => {
-                                match self.connection.state.registration_state {
-                                    RegistrationState::None => {
-                                        if password == "blabla" { // Match connection password
-                                            self.connection.state.registration_state = RegistrationState::PassReceived;
-                                        } else {
-                                            warn!("{:?}", IRCError::PasswdMismatch);
-                                        }
-                                    },
-                                    _ => {
-                                        warn!("{:?}", IRCError::AlreadyRegistred);
+                    match maby_message {
+                        Some(message) => {
+                            match self.generate_response(message).await {
+                                Ok(maby_response) => {
+                                    match maby_response {
+                                        Some(response) => {
+                                            Some(response.to_string())
+                                        },
+                                        None => None,
                                     }
+                                },
+                                Err(err) => {
+                                    // warn!("{:?}", err);
+                                    Some((err as i32).to_string())
                                 }
-                            },
-                            Command::Nick{nickname} => {
-                                match self.connection.state.registration_state {
-                                    RegistrationState::PassReceived => {
-                                        // TODO: check if in use
-                                        self.connection.state.registration_state = RegistrationState::NickReceived;
-                                        self.connection.state.nick = nickname.to_string();
-                                    },
-                                    _ => !todo!()
-                                }
-                            },
-                            _ => todo!()
-
-                        }
-                        let mut msg = m.to_string();
-                        msg.push('\n');
-                        self.connection.stream.write_all(msg.as_bytes()).await.unwrap();
-
-                        let mut db = self.db.lock().await;
-                        db.push(msg);
-                        drop(db);
+                            }
+                        },
+                        None => None,
                     }
                 },
                 Err(err) => {
@@ -140,13 +124,104 @@ impl Handler {
                             return Err(());
                         },
                         _ => {
-                            warn!("{:?}", err);
+                            // warn!("{:?}", err);
+                            Some((err as i32).to_string())
                         },
                     }
                 },
+            };
+
+            if let Some(mut resp) = maby_response {
+                resp.push('\n');
+                self.connection.stream.write_all(resp.as_bytes()).await.unwrap();
+
+                let mut messages = self.messages.lock().await;
+                messages.push(resp);
+                drop(messages);
             }
+
         }
         Ok(())
+    }
+
+    async fn generate_response(&mut self, message: Message) -> Result<Option<Message>, IRCError> {
+        let respoonse_command: Command = match &message.command {
+            Command::Pass{password} => {
+                match self.connection.state.registration_state {
+                    RegistrationState::None => {
+                        if password == "blabla" { // Match connection password
+                            self.connection.state.registration_state = RegistrationState::PassReceived;
+                            return Ok(None);
+                        } else {
+                            // warn!("{:?}", IRCError::PasswdMismatch);
+                            return Err(IRCError::PasswdMismatch);
+                        }
+                    },
+                    _ => {
+                        // warn!("{:?}", IRCError::AlreadyRegistred);
+                        // return Err(IRCError::AlreadyRegistred);
+                        return Ok(None)
+                    }
+                }
+            },
+            Command::Nick{nickname} => {
+                let new_reg_state = match self.connection.state.registration_state {
+                    RegistrationState::PassReceived => {
+                        RegistrationState::UserReceived
+                    },
+                    RegistrationState::UserReceived => {
+                        RegistrationState::Registered
+                    },
+                    _ => {
+                        // warn!("{:?}", IRCError::AlreadyRegistred);
+                        return Err(IRCError::AlreadyRegistred);
+                    }
+                };
+                let new_nick = nickname.to_string();
+                // TODO: check if contains disallowed characters (ERR_ERRONEUSNICKNAME)
+                if false {
+                    return Err(IRCError::ErroneusNickname);
+                }
+                // TODO: check if nick in useed on network (ERR_NICKNAMEINUSE)
+                let mut nicks = self.nicks.lock().await;
+                if nicks.contains(&new_nick) {
+                    return Err(IRCError::NicknameInUse);
+                }
+                nicks.push(new_nick.clone());
+                drop(nicks);
+                // TODO: ERR_NICKCOLLISION ???
+
+                self.connection.state.nickname = new_nick;
+                self.connection.state.registration_state = new_reg_state;
+                return Ok(None);
+            },
+            Command::User{user, realname, ..} => {
+                match self.connection.state.registration_state {
+                    RegistrationState::PassReceived => {
+                        self.connection.state.registration_state = RegistrationState::UserReceived;
+                    },
+                    RegistrationState::NickReceived=> {
+                        self.connection.state.registration_state = RegistrationState::Registered;
+                    },
+                    _ => {
+                        warn!("{:?}", IRCError::AlreadyRegistred);
+                        return Err(IRCError::AlreadyRegistred);
+                    }
+                }
+                self.connection.state.username = user.to_string();
+                self.connection.state.realname = realname.to_string();
+                return Ok(None);
+            },
+            Command::Ping{token} => {
+                Command::Pong{ server: None, token: token.to_string()}
+            },
+            _ => todo!("Add all cases")
+
+        };
+
+        let response_message = Message{prefix: Some(":Server".to_string()), command: respoonse_command};
+
+        return Ok(Some(response_message));
     }
 }
 
@@ -175,7 +250,8 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
 
     let mut server = Listener {
         listener,
-        db: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        nicks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         notify_shutdown,
         shutdown_complete_tx,
         shutdown_complete_rx

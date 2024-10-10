@@ -17,7 +17,9 @@ pub enum RegistrationState {
 
 pub struct State {
     pub registration_state: RegistrationState,
-    pub nick: String
+    pub nickname: String,
+    pub username: String,
+    pub realname: String,
 }
 
 pub struct Connection {
@@ -33,7 +35,9 @@ impl Connection {
             stream,
             address,
             buffer: BytesMut::with_capacity(1024 * 2),
-            state: State{registration_state: RegistrationState::None, nick: String::new()}
+            state: State{registration_state: RegistrationState::None,
+                nickname: String::new(), username: String::new(), realname: String::new()
+            }
         }
     }
 
@@ -91,3 +95,20 @@ impl Connection {
         }
     }
 }
+
+// impl RegistrationState {
+//     fn next(self, received: RegistrationState) -> RegistrationState {
+//         match self {
+//             RegistrationState::None => {
+//                 if RegistrationState::PassReceived  == received {
+//                     return RegistrationState::PassReceived
+//                 } else {
+//                     return self
+//                 }
+//             },
+//             _ => {
+//                 return self
+//             }
+//         }
+//     }
+// }
