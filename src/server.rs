@@ -16,8 +16,6 @@ type Db = Arc<tokio::sync::Mutex<Vec<String>>>;
 const BACKOFF_LIMIT: u64 = 64;
 
 struct Listener {
-    messages: Db,
-    nicks: Db,
     listener: TcpListener,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
@@ -25,8 +23,6 @@ struct Listener {
 }
 
 struct Handler {
-    messages: Db,
-    nicks: Db,
     connection: Connection,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
@@ -44,8 +40,6 @@ impl Listener {
             let (stream, address) = self.accept().await?;
             let mut handler = Handler{
                 // db: self.db.clone(),
-                messages: self.messages.clone(),
-                nicks: self.nicks.clone(),
                 connection: Connection::new(stream, address),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
@@ -81,12 +75,6 @@ impl Listener {
 impl Handler {
     async fn run(&mut self) -> Result<(), ()> {
 
-        let messages = self.messages.lock().await;
-        for msg in messages.iter() {
-            self.connection.stream.write_all(msg.as_bytes()).await.unwrap();
-        }
-        drop(messages);
-
         while !self.shutdown.is_shutdown() {
             let received = tokio::select! {
                 res = self.connection.read_message() => res,
@@ -95,27 +83,13 @@ impl Handler {
                     return Err(());
                 }
             };
-            self.connection.buffer.clear();
-            let maby_response: Option<String> = match received {
+            let maby_response: Result<Option<Message>, IRCError> = match received {
                 Ok(maby_message) => {
                     match maby_message {
                         Some(message) => {
-                            match self.generate_response(message).await {
-                                Ok(maby_response) => {
-                                    match maby_response {
-                                        Some(response) => {
-                                            Some(response.to_string())
-                                        },
-                                        None => None,
-                                    }
-                                },
-                                Err(err) => {
-                                    // warn!("{:?}", err);
-                                    Some((err as i32).to_string())
-                                }
-                            }
+                            self.generate_response(message).await
                         },
-                        None => None,
+                        None => Ok(None),
                     }
                 },
                 Err(err) => {
@@ -123,23 +97,22 @@ impl Handler {
                         IRCError::ClientExited => {
                             return Err(());
                         },
-                        _ => {
-                            // warn!("{:?}", err);
-                            Some((err as i32).to_string())
+                        err => {
+                            Err(err)
                         },
                     }
                 },
             };
 
-            if let Some(mut resp) = maby_response {
-                resp.push('\n');
-                self.connection.stream.write_all(resp.as_bytes()).await.unwrap();
-
-                let mut messages = self.messages.lock().await;
-                messages.push(resp);
-                drop(messages);
+            match maby_response {
+                Ok(None) => {},
+                Ok(Some(message)) => {
+                    self.connection.write_message(&message).await;
+                },
+                Err(err) => {
+                    self.connection.write_error(&err).await;
+                }
             }
-
         }
         Ok(())
     }
@@ -159,22 +132,22 @@ impl Handler {
                     },
                     _ => {
                         // warn!("{:?}", IRCError::AlreadyRegistred);
-                        // return Err(IRCError::AlreadyRegistred);
-                        return Ok(None)
+                        return Err(IRCError::AlreadyRegistred);
                     }
                 }
             },
             Command::Nick{nickname} => {
-                let new_reg_state = match self.connection.state.registration_state {
+                let new_reg_state: Option<RegistrationState> = match self.connection.state.registration_state {
                     RegistrationState::PassReceived => {
-                        RegistrationState::UserReceived
+                        Some(RegistrationState::NickReceived)
                     },
                     RegistrationState::UserReceived => {
-                        RegistrationState::Registered
+                        Some(RegistrationState::Registered)
                     },
                     _ => {
                         // warn!("{:?}", IRCError::AlreadyRegistred);
-                        return Err(IRCError::AlreadyRegistred);
+                        // return Err(IRCError::AlreadyRegistred);
+                        None
                     }
                 };
                 let new_nick = nickname.to_string();
@@ -183,16 +156,12 @@ impl Handler {
                     return Err(IRCError::ErroneusNickname);
                 }
                 // TODO: check if nick in useed on network (ERR_NICKNAMEINUSE)
-                let mut nicks = self.nicks.lock().await;
-                if nicks.contains(&new_nick) {
-                    return Err(IRCError::NicknameInUse);
-                }
-                nicks.push(new_nick.clone());
-                drop(nicks);
                 // TODO: ERR_NICKCOLLISION ???
 
                 self.connection.state.nickname = new_nick;
-                self.connection.state.registration_state = new_reg_state;
+                if let Some(reg_state) = new_reg_state {
+                    self.connection.state.registration_state = reg_state;
+                }
                 return Ok(None);
             },
             Command::User{user, realname, ..} => {
@@ -204,7 +173,7 @@ impl Handler {
                         self.connection.state.registration_state = RegistrationState::Registered;
                     },
                     _ => {
-                        warn!("{:?}", IRCError::AlreadyRegistred);
+                        // warn!("{:?}", IRCError::AlreadyRegistred);
                         return Err(IRCError::AlreadyRegistred);
                     }
                 }
@@ -215,11 +184,14 @@ impl Handler {
             Command::Ping{token} => {
                 Command::Pong{ server: None, token: token.to_string()}
             },
-            _ => todo!("Add all cases")
+            _ => {
+
+                return Ok(None);
+            }
 
         };
 
-        let response_message = Message{prefix: Some(":Server".to_string()), command: respoonse_command};
+        let response_message = Message{prefix: None, command: respoonse_command};
 
         return Ok(Some(response_message));
     }
@@ -250,8 +222,6 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
 
     let mut server = Listener {
         listener,
-        messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        nicks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         notify_shutdown,
         shutdown_complete_tx,
         shutdown_complete_rx
@@ -275,7 +245,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
 }
 
 pub async fn start_server() -> SocketAddr {
-    let server_addr: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234);
+    let server_addr: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6697);
 
     let listener = match TcpListener::bind(server_addr).await {
         Ok(l) => l,

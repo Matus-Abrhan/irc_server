@@ -1,6 +1,6 @@
 use std::{io::Cursor, net::SocketAddr};
 
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpStream};
 use bytes::{Buf, BytesMut};
 use log::{info, warn};
 
@@ -43,15 +43,6 @@ impl Connection {
 
     pub async fn read_message(&mut self) -> Result<Option<Message>, IRCError> {
         loop {
-            match self.stream.read_buf(&mut self.buffer).await {
-                Ok(0) => return Err(IRCError::ClientExited),
-                Ok(_n) => (),
-                Err(e) => {
-                    warn!("{:}", e);
-                    return Err(IRCError::ClientExited);
-                },
-            };
-
             match self.parse_frame() {
                 Ok(m) => return Ok(m),
                 Err(e) => {
@@ -63,52 +54,63 @@ impl Connection {
                 },
             }
 
-            info!("{:?}", &self.buffer[..]);
-            self.buffer.clear();
+            match self.stream.read_buf(&mut self.buffer).await {
+                Ok(0) => return Err(IRCError::ClientExited),
+                Ok(_n) => (),
+                Err(e) => {
+                    warn!("{:}", e);
+                    return Err(IRCError::ClientExited);
+                },
+            };
+            info!("received bytes: {:?}", &self.buffer[..]);
+
+            // let mut cursor = Cursor::new(&self.buffer[..]);
+            // while Message::check(&mut cursor) {
+            //     // TODO: figure this shit out
+            //     Message::parse()
+            // }
+
+            // self.buffer.clear();
         }
     }
 
-    // pub async fn write_message(&mut self) -> Result<(), ()>{
-    //     return Err(());
-    // }
+    pub async fn write_message(&mut self, message: &Message) {
+        let mut msg_parts = message.get_parts().join(" ");
+        msg_parts.push('\r');
+        msg_parts.push('\n');
+        let bytes = msg_parts.as_bytes();
 
+        self.stream.write_all(bytes).await.unwrap();
+        // TODO: setup ability to queue messages
+        self.stream.flush().await.unwrap();
+        info!("sent bytes: {:?}", &bytes[..]);
+    }
+
+    pub async fn write_error(&mut self, error: &IRCError) {
+
+        self.stream.write_i32(*error as i32).await.unwrap();
+        self.stream.flush().await.unwrap();
+        info!("sent error: {:?}", *error as i32);
+    }
 
     fn parse_frame(&mut self) -> Result<Option<Message>, IRCError> {
-        let mut cursor = Cursor::new(&self.buffer[..]);
+        // let mut cursor = Cursor::new(&self.buffer[..]);
+        let mut cursor = Cursor::new(self.buffer.chunk());
         match Message::check(&mut cursor) {
-            Ok(_) => {
+            Ok(msg) => {
                 let len = cursor.position() as usize;
                 cursor.set_position(0);
 
-
-                let message: Message = match Message::parse(&mut cursor) {
-                    Ok(m) => m,
-                    Err(IRCError::Incomplete) => return Ok(None),
+                match Message::parse(msg) {
+                    Ok(m) => {
+                        info!("Buffer remaining: {:}", self.buffer.remaining());
+                        self.buffer.advance(len);
+                        return Ok(Some(m));
+                    },
                     Err(e) => return Err(e),
                 };
-                self.buffer.advance(len);
-                // self.buffer.clear();
-                Ok(Some(message))
             },
-            Err(IRCError::Incomplete) => Ok(None),
             Err(e) => Err(e),
         }
     }
 }
-
-// impl RegistrationState {
-//     fn next(self, received: RegistrationState) -> RegistrationState {
-//         match self {
-//             RegistrationState::None => {
-//                 if RegistrationState::PassReceived  == received {
-//                     return RegistrationState::PassReceived
-//                 } else {
-//                     return self
-//                 }
-//             },
-//             _ => {
-//                 return self
-//             }
-//         }
-//     }
-// }

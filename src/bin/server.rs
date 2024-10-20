@@ -11,7 +11,7 @@ async fn main() -> Result<(), ()> {
     }
     env_logger::init();
 
-    let server_addr: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234);
+    let server_addr: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6697);
 
     let listener = match TcpListener::bind(server_addr).await {
         Ok(l) => l,

@@ -4,6 +4,7 @@ use crate::irc_core::message_errors::IRCError;
 
 #[derive(Debug)]
 pub enum Command {
+    Cap,  //{subcommand: String, capabilities: String},
     Pass{password: String}, //, version: Option<String>, flags: Option<String>, options: Option<Vec<String>>
     Nick{nickname: String}, //, hopcount: String, username: String, host: String, servertoken: String, umode: String, realname: String
     User{user: String, mode: String, unused: String, realname: String},
@@ -12,40 +13,33 @@ pub enum Command {
     Oper{name: String, password: String},
     Quit{reason: Option<String>},
     Error{reason: String},
+
+    Join{channels: String, keys: Option<String>},
+
+    PrivMsg{targets: String, text: String},
 }
 
 impl Command {
     pub fn parse(_prefix: &Option<String>, command: String, options: &mut Vec<String>) -> Result<Command, IRCError> {
         match &command[..] {
+            "CAP" => {
+                Ok(Command::Cap)
+            },
+
             "PASS" => {
-                let password = match options.pop() {
-                    Some(res) => res,
-                    None => return Err(IRCError::NeedMoreParams),
-                };
+                let password = options.pop().ok_or(IRCError::SilentDiscard)?;
                 Ok(Command::Pass{password})
             },
 
             "NICK" => {
-                let nickname = match options.pop() {
-                    Some(res) => res,
-                    None => return Err(IRCError::NoNicknameGiven),
-                };
+                let nickname = options.pop().ok_or(IRCError::SilentDiscard)?;
                 Ok(Command::Nick{nickname})
             },
 
             "USER" => {
-                let user = match options.pop() {
-                    Some(res) => res,
-                    None => return Err(IRCError::SilentDiscard),
-                };
-                let mode= match options.pop() {
-                    Some(res) => res,
-                    None => return Err(IRCError::SilentDiscard),
-                };
-                let unused = match options.pop() {
-                    Some(res) => res,
-                    None => return Err(IRCError::SilentDiscard),
-                };
+                let user = options.pop().ok_or(IRCError::SilentDiscard)?;
+                let mode = options.pop().ok_or(IRCError::SilentDiscard)?;
+                let unused = options.pop().ok_or(IRCError::SilentDiscard)?;
                 options.reverse();
                 Ok(Command::User{user, mode, unused, realname: options.join(" ")})
             },
@@ -56,25 +50,20 @@ impl Command {
             },
 
             "PONG" => {
-                let mut server: Option<String> = None;
-                if options.len() > 1 {
-                    server = Some(options.pop().ok_or(IRCError::SilentDiscard)?);
-                }
+                // let mut server: Option<String> = None;
+                // if options.len() > 1 {
+                //     server = Some(options.pop().ok_or(IRCError::SilentDiscard)?);
+                // }
+                // let token = options.pop().ok_or(IRCError::SilentDiscard)?;
+                options.reverse();
                 let token = options.pop().ok_or(IRCError::SilentDiscard)?;
+                let server = options.pop();
                 Ok(Command::Pong{server, token})
             },
 
             "OPER" => {
-                // let name = options.pop().ok_or(IRCError::NeedMoreParams)?;
-                let name = match options.pop() {
-                    Some(res) => res,
-                    None => return Err(IRCError::NeedMoreParams),
-                };
-                // let password = options.pop().ok_or(IRCError::NeedMoreParams)?;
-                let password = match options.pop() {
-                    Some(res) => res,
-                    None => return Err(IRCError::NeedMoreParams),
-                };
+                let name = options.pop().ok_or(IRCError::NeedMoreParams)?;
+                let password = options.pop().ok_or(IRCError::NeedMoreParams)?;
                 Ok(Command::Oper{name, password})
             },
 
@@ -86,24 +75,42 @@ impl Command {
                 let reason = options.join(" ");
                 Ok(Command::Quit{reason: Some(reason)})
             },
+
             "ERROR" => {
-                let reason = match options.pop() {
-                    Some(res) => res,
-                    None => return Err(IRCError::SilentDiscard),
-                };
+                let reason = options.pop().ok_or(IRCError::SilentDiscard)?;
                 Ok(Command::Error{reason})
+            }
+
+            "JOIN" => {
+                let channels = options.pop().ok_or(IRCError::SilentDiscard)?;
+                let keys = options.pop();
+
+                Ok(Command::Join{channels, keys})
             }
 
             _ => Err(IRCError::SilentDiscard),
         }
+    }
+
+    pub fn get_parts(&self) -> Vec<String> {
+        let mut command_parts: Vec<String> = Vec::new();
+        match self {
+            Command::Pong{server, token} => {
+                command_parts.push("PONG".to_string());
+                command_parts.push(token.to_string());
+                if let Some(server) = server {
+                    command_parts.push(server.to_string());
+                }
+            },
+            _ => {}
+        }
+        return command_parts;
     }
 }
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self)
-        // or, alternatively:
-        // fmt::Debug::fmt(self, f)
     }
 }
 

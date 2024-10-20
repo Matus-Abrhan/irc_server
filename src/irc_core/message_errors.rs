@@ -1,8 +1,7 @@
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum IRCError{
-    SilentDiscard = -1,
-    Incomplete = -2,
-    ClientExited = -3,
+    ClientExited = -1,
+    SilentDiscard = -2,
 
     NoNicknameGiven = 431,
     ErroneusNickname = 432,
