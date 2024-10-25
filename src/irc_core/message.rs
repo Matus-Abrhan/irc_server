@@ -14,12 +14,12 @@ pub struct Message {
 }
 
 impl<'a> Message {
-    pub fn parse(src: &'a [u8]) -> Result<Message, IRCError> {
-        // let msg = get_message(src)?;
+    pub fn parse(src: &'a [u8]) -> Result<Option<Message>, IRCError> {
         let has_prefix = src.starts_with(b":");
         let mut msg_parts: Vec<String> = match str::from_utf8(src) {
             Ok(m) => m.trim().split(" ").map(|s| s.to_string()).collect::<Vec<String>>(),
-            Err(_) => return Err(IRCError::SilentDiscard),
+            // Err(_) => return Err(IRCError::SilentDiscard),
+            Err(_) => return Ok(None),
         };
         debug!("received: {:?}", msg_parts);
         msg_parts.reverse();
@@ -27,7 +27,8 @@ impl<'a> Message {
         let prefix: Option<String>;
         if has_prefix {
             match msg_parts.pop() {
-                None => return Err(IRCError::SilentDiscard),
+                // None => return Err(IRCError::SilentDiscard),
+                None => return Ok(None),
                 Some(p) => prefix = Some(p),
             }
         } else {
@@ -38,17 +39,23 @@ impl<'a> Message {
             Some(c) => {
                 match Command::parse(&prefix, c, &mut msg_parts) {
                     Ok(command) => command,
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        match e {
+                            IRCError::SilentDiscard => return Ok(None),
+                            _ => return Err(e),
+                        }
+                    },
                 }
             },
-            None => return Err(IRCError::SilentDiscard),
+            // None => return Err(IRCError::SilentDiscard),
+            None => return Ok(None),
         };
-        Ok(Message { prefix, command})
+        Ok(Some(Message { prefix, command}))
     }
 
     pub fn check(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], IRCError> {
         if !src.has_remaining() {
-            return Err(IRCError::SilentDiscard)
+            return Err(IRCError::NoMessageLeftInBuffer)
         }
 
         return get_message(src);
@@ -72,9 +79,9 @@ pub fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], IRCError>
 
     for i in start..end {
         if src.get_ref()[i] == b'\r' && src.get_ref()[i+1] == b'\n' {
-            if (i+1) - start > 512 {
-                return Err(IRCError::SilentDiscard);
-            }
+            // if (i+1) - start > 512 {
+            //     return Err(IRCError::SilentDiscard);
+            // }
             src.set_position((i+2)as u64);
             return Ok(&src.get_ref()[start..i]);
         }
@@ -87,8 +94,9 @@ pub fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], IRCError>
         //     return Ok(&src.get_ref()[start..i]);
         // }
     }
-    // Err(IRCError::Incomplete)
-    Err(IRCError::SilentDiscard)
+    // return Err(IRCError::SilentDiscard);
+    src.set_position((end+1)as u64);
+    return Err(IRCError::NoMessageLeftInBuffer);
 }
 
 impl fmt::Display for Message {

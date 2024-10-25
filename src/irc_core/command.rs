@@ -79,14 +79,25 @@ impl Command {
             "ERROR" => {
                 let reason = options.pop().ok_or(IRCError::SilentDiscard)?;
                 Ok(Command::Error{reason})
-            }
+            },
 
             "JOIN" => {
                 let channels = options.pop().ok_or(IRCError::SilentDiscard)?;
                 let keys = options.pop();
 
                 Ok(Command::Join{channels, keys})
-            }
+            },
+
+            "PRIVMSG" => {
+                let targets = options.pop().ok_or(IRCError::SilentDiscard)?;
+                if options.is_empty() {
+                    return Err(IRCError::NoTextToSend);
+                }
+                options.reverse();
+                let text = options.join(" ");
+
+                Ok(Command::PrivMsg{targets, text})
+            },
 
             _ => Err(IRCError::SilentDiscard),
         }

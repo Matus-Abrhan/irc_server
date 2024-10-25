@@ -47,8 +47,7 @@ impl Connection {
                 Ok(m) => return Ok(m),
                 Err(e) => {
                     match e {
-                        // IRCError::Incomplete => (),
-                        IRCError::SilentDiscard => (),
+                        IRCError::NoMessageLeftInBuffer => (),
                         _ => return Err(e),
                     }
                 },
@@ -63,38 +62,34 @@ impl Connection {
                 },
             };
             info!("received bytes: {:?}", &self.buffer[..]);
-
-            // let mut cursor = Cursor::new(&self.buffer[..]);
-            // while Message::check(&mut cursor) {
-            //     // TODO: figure this shit out
-            //     Message::parse()
-            // }
-
-            // self.buffer.clear();
         }
     }
 
     pub async fn write_message(&mut self, message: &Message) {
         let mut msg_parts = message.get_parts().join(" ");
-        msg_parts.push('\r');
-        msg_parts.push('\n');
+        msg_parts.push_str("\r\n");
         let bytes = msg_parts.as_bytes();
 
         self.stream.write_all(bytes).await.unwrap();
+        // self.stream.flush().await.unwrap();
+        info!("sent message: {:?}", &bytes[..]);
+        self.flush_stream().await;
+    }
+
+    pub async fn flush_stream(&mut self) {
         // TODO: setup ability to queue messages
         self.stream.flush().await.unwrap();
-        info!("sent bytes: {:?}", &bytes[..]);
     }
 
     pub async fn write_error(&mut self, error: &IRCError) {
 
         self.stream.write_i32(*error as i32).await.unwrap();
-        self.stream.flush().await.unwrap();
+        // self.stream.flush().await.unwrap();
         info!("sent error: {:?}", *error as i32);
+        self.flush_stream().await;
     }
 
     fn parse_frame(&mut self) -> Result<Option<Message>, IRCError> {
-        // let mut cursor = Cursor::new(&self.buffer[..]);
         let mut cursor = Cursor::new(self.buffer.chunk());
         match Message::check(&mut cursor) {
             Ok(msg) => {
@@ -103,14 +98,22 @@ impl Connection {
 
                 match Message::parse(msg) {
                     Ok(m) => {
-                        info!("Buffer remaining: {:}", self.buffer.remaining());
                         self.buffer.advance(len);
-                        return Ok(Some(m));
+                        // info!("Buffer remaining: {:}", self.buffer.remaining());
+                        return Ok(m);
                     },
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        self.buffer.advance(len);
+                        return Err(e)
+                    },
                 };
             },
-            Err(e) => Err(e),
+            Err(e) => {
+                let len = cursor.position() as usize;
+                self.buffer.advance(len);
+                Err(e)
+
+            },
         }
     }
 }

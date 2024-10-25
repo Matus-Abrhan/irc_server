@@ -1,7 +1,8 @@
 use std::future::Future;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use log::{info, warn};
+
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
@@ -10,13 +11,20 @@ use tokio::time::{self, Duration};
 use crate::irc_core::connection::{Connection, RegistrationState};
 use crate::irc_core::command::Command;
 use crate::irc_core::message::Message;
+use crate::irc_core::channel::Channel;
 use crate::irc_core::message_errors::IRCError;
 
-type Db = Arc<tokio::sync::Mutex<Vec<String>>>;
+// TODO: should std::Mutex or tokio Mutex be used ?
+// type ChannelDb = Arc<tokio::sync::Mutex<Vec<Channel>>>;
+type ChannelDb = Arc<Mutex<Vec<Channel>>>;
+// NOTE: could by more granular?
+// Arc<Vec<Mutex<Channel>>>
+
 const BACKOFF_LIMIT: u64 = 64;
 
 struct Listener {
     listener: TcpListener,
+    channel_db: ChannelDb,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
     shutdown_complete_rx: mpsc::Receiver<()>,
@@ -24,6 +32,7 @@ struct Listener {
 
 struct Handler {
     connection: Connection,
+    channel_db: ChannelDb,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
 }
@@ -40,6 +49,7 @@ impl Listener {
             let (stream, address) = self.accept().await?;
             let mut handler = Handler{
                 // db: self.db.clone(),
+                channel_db: self.channel_db.clone(),
                 connection: Connection::new(stream, address),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
@@ -79,17 +89,22 @@ impl Handler {
             let received = tokio::select! {
                 res = self.connection.read_message() => res,
                 _ = self.shutdown.recv() => {
-                    self.connection.stream.write_all("server quit\n".as_bytes()).await.unwrap();
+                    // self.connection.stream.write_all("server quit\n".as_bytes()).await.unwrap();
+                    info!("Server quit");
                     return Err(());
                 }
             };
-            let maby_response: Result<Option<Message>, IRCError> = match received {
+            // let _maby_response: Result<Option<Message>, IRCError> = match received {
+            match received {
                 Ok(maby_message) => {
                     match maby_message {
                         Some(message) => {
-                            self.generate_response(message).await
+                            self.write_response(message).await
                         },
-                        None => Ok(None),
+                        None => {
+                            // Ok(None)
+                            ();
+                        },
                     }
                 },
                 Err(err) => {
@@ -98,44 +113,47 @@ impl Handler {
                             return Err(());
                         },
                         err => {
-                            Err(err)
+                            // Err(err)
+                            self.connection.write_error(&err).await;
                         },
                     }
                 },
             };
 
-            match maby_response {
-                Ok(None) => {},
-                Ok(Some(message)) => {
-                    self.connection.write_message(&message).await;
-                },
-                Err(err) => {
-                    self.connection.write_error(&err).await;
-                }
-            }
+            // match maby_response {
+            //     Ok(None) => {},
+            //     // Ok(Some(message)) => {
+            //     //     self.connection.write_message(&message).await;
+            //     // },
+            //     // Err(err) => {
+            //     //     self.connection.write_error(&err).await;
+            //     // }
+            // }
+
+            // self.connection.flush_stream().await;
         }
         Ok(())
     }
 
-    async fn generate_response(&mut self, message: Message) -> Result<Option<Message>, IRCError> {
-        let respoonse_command: Command = match &message.command {
+    async fn write_response(&mut self, message: Message) {
+        match &message.command {
             Command::Pass{password} => {
                 match self.connection.state.registration_state {
                     RegistrationState::None => {
                         if password == "blabla" { // Match connection password
                             self.connection.state.registration_state = RegistrationState::PassReceived;
-                            return Ok(None);
                         } else {
-                            // warn!("{:?}", IRCError::PasswdMismatch);
-                            return Err(IRCError::PasswdMismatch);
+                            // return Err(IRCError::PasswdMismatch);
+                            self.connection.write_error(&IRCError::PasswdMismatch).await;
                         }
                     },
                     _ => {
-                        // warn!("{:?}", IRCError::AlreadyRegistred);
-                        return Err(IRCError::AlreadyRegistred);
-                    }
-                }
+                        // return Err(IRCError::AlreadyRegistred);
+                        self.connection.write_error(&IRCError::AlreadyRegistred).await;
+                    },
+                };
             },
+
             Command::Nick{nickname} => {
                 let new_reg_state: Option<RegistrationState> = match self.connection.state.registration_state {
                     RegistrationState::PassReceived => {
@@ -145,15 +163,15 @@ impl Handler {
                         Some(RegistrationState::Registered)
                     },
                     _ => {
-                        // warn!("{:?}", IRCError::AlreadyRegistred);
-                        // return Err(IRCError::AlreadyRegistred);
                         None
-                    }
+                    },
                 };
                 let new_nick = nickname.to_string();
                 // TODO: check if contains disallowed characters (ERR_ERRONEUSNICKNAME)
                 if false {
-                    return Err(IRCError::ErroneusNickname);
+                    // return Err(IRCError::ErroneusNickname);
+                    self.connection.write_error(&IRCError::ErroneusNickname).await;
+                    return;
                 }
                 // TODO: check if nick in useed on network (ERR_NICKNAMEINUSE)
                 // TODO: ERR_NICKCOLLISION ???
@@ -162,8 +180,9 @@ impl Handler {
                 if let Some(reg_state) = new_reg_state {
                     self.connection.state.registration_state = reg_state;
                 }
-                return Ok(None);
+                // return Ok(None);
             },
+
             Command::User{user, realname, ..} => {
                 match self.connection.state.registration_state {
                     RegistrationState::PassReceived => {
@@ -173,27 +192,39 @@ impl Handler {
                         self.connection.state.registration_state = RegistrationState::Registered;
                     },
                     _ => {
-                        // warn!("{:?}", IRCError::AlreadyRegistred);
-                        return Err(IRCError::AlreadyRegistred);
+                        // return Err(IRCError::AlreadyRegistred);
+                        self.connection.write_error(&IRCError::AlreadyRegistred).await;
                     }
                 }
                 self.connection.state.username = user.to_string();
                 self.connection.state.realname = realname.to_string();
-                return Ok(None);
+                // return Ok(None);
             },
+
             Command::Ping{token} => {
-                Command::Pong{ server: None, token: token.to_string()}
+                self.connection.write_message(&Message{
+                    prefix: None,
+                    command: Command::Pong{ server: None, token: token.to_string()}
+                }).await
             },
-            _ => {
 
-                return Ok(None);
-            }
-
-        };
-
-        let response_message = Message{prefix: None, command: respoonse_command};
-
-        return Ok(Some(response_message));
+            // Command::Join{channels, ..} => {
+            //     let mut channel_db = self.channel_db.lock().unwrap();
+            //     for (_idx, channel) in channels.split(',').enumerate() {
+            //         channel_db.push(Channel{
+            //             name: channel.to_string(),
+            //             members: Vec::from([self.connection.state.nickname.clone()]),
+            //             flags: Vec::new(),
+            //         });
+            //         self.connection.write_message(&Message{
+            //             prefix: Some(self.connection.state.username),
+            //             command: Command::Join{channel.to_string(), keys: None},
+            //         }).await;
+            //     };
+            //     drop(channel_db);
+            // },
+            _ => {}
+        }
     }
 }
 
@@ -222,6 +253,8 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
 
     let mut server = Listener {
         listener,
+        // channel_db: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        channel_db: Arc::new(Mutex::new(Vec::new())),
         notify_shutdown,
         shutdown_complete_tx,
         shutdown_complete_rx
@@ -245,12 +278,11 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
 }
 
 pub async fn start_server() -> SocketAddr {
-    let server_addr: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6697);
-
-    let listener = match TcpListener::bind(server_addr).await {
+    let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
         Err(e) => panic!("{}", e),
     };
+    let server_addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         run(listener, tokio::signal::ctrl_c()).await
     });
