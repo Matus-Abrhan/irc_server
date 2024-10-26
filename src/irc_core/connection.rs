@@ -5,7 +5,13 @@ use bytes::{Buf, BytesMut};
 use log::{info, warn};
 
 use crate::irc_core::message::Message;
-use crate::irc_core::message_errors::IRCError;
+use crate::irc_core::error::IRCError;
+use crate::irc_core::numeric::ErrorReply;
+
+enum JoinedError {
+    IRCError(IRCError),
+    ErrorReply(ErrorReply),
+}
 
 pub enum RegistrationState {
     None = 0,
@@ -47,8 +53,17 @@ impl Connection {
                 Ok(m) => return Ok(m),
                 Err(e) => {
                     match e {
-                        IRCError::NoMessageLeftInBuffer => (),
-                        _ => return Err(e),
+                        JoinedError::ErrorReply(e) => {
+                            // return Err(e)
+                            self.write_error(&e).await;
+                            return Ok(None);
+                        },
+                        JoinedError::IRCError(e) => {
+                            match e {
+                                IRCError::NoMessageLeftInBuffer => (),
+                                IRCError::ClientExited => panic!("This should not happen"),
+                            };
+                        }
                     }
                 },
             }
@@ -81,7 +96,7 @@ impl Connection {
         self.stream.flush().await.unwrap();
     }
 
-    pub async fn write_error(&mut self, error: &IRCError) {
+    pub async fn write_error(&mut self, error: &ErrorReply) {
 
         self.stream.write_i32(*error as i32).await.unwrap();
         // self.stream.flush().await.unwrap();
@@ -89,7 +104,7 @@ impl Connection {
         self.flush_stream().await;
     }
 
-    fn parse_frame(&mut self) -> Result<Option<Message>, IRCError> {
+    fn parse_frame(&mut self) -> Result<Option<Message>, JoinedError> {
         let mut cursor = Cursor::new(self.buffer.chunk());
         match Message::check(&mut cursor) {
             Ok(msg) => {
@@ -104,16 +119,12 @@ impl Connection {
                     },
                     Err(e) => {
                         self.buffer.advance(len);
-                        return Err(e)
+                        return Err(JoinedError::ErrorReply(e))
                     },
                 };
             },
-            Err(e) => {
-                let len = cursor.position() as usize;
-                self.buffer.advance(len);
-                Err(e)
+            Err(e) => return Err(JoinedError::IRCError(e)),
+        };
 
-            },
-        }
     }
 }

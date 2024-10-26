@@ -1,18 +1,19 @@
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use log::{info, warn};
+use std::sync::Arc;
+use log::{info, warn, error};
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::{self, Duration};
 
 use crate::irc_core::connection::{Connection, RegistrationState};
 use crate::irc_core::command::Command;
 use crate::irc_core::message::Message;
 use crate::irc_core::channel::Channel;
-use crate::irc_core::message_errors::IRCError;
+use crate::irc_core::numeric::ErrorReply;
+use crate::irc_core::error::IRCError;
 
 // TODO: should std::Mutex or tokio Mutex be used ?
 // type ChannelDb = Arc<tokio::sync::Mutex<Vec<Channel>>>;
@@ -89,12 +90,10 @@ impl Handler {
             let received = tokio::select! {
                 res = self.connection.read_message() => res,
                 _ = self.shutdown.recv() => {
-                    // self.connection.stream.write_all("server quit\n".as_bytes()).await.unwrap();
                     info!("Server quit");
                     return Err(());
                 }
             };
-            // let _maby_response: Result<Option<Message>, IRCError> = match received {
             match received {
                 Ok(maby_message) => {
                     match maby_message {
@@ -102,35 +101,22 @@ impl Handler {
                             self.write_response(message).await
                         },
                         None => {
-                            // Ok(None)
-                            ();
+
+                            (); // NOTE: No message received no response sent
                         },
                     }
                 },
                 Err(err) => {
                     match err {
                         IRCError::ClientExited => {
-                            return Err(());
+                            return Err(()); // NOTE: client exited -> end thread
                         },
-                        err => {
-                            // Err(err)
-                            self.connection.write_error(&err).await;
+                        _ => {
+                            panic!("This should not happen")
                         },
                     }
                 },
             };
-
-            // match maby_response {
-            //     Ok(None) => {},
-            //     // Ok(Some(message)) => {
-            //     //     self.connection.write_message(&message).await;
-            //     // },
-            //     // Err(err) => {
-            //     //     self.connection.write_error(&err).await;
-            //     // }
-            // }
-
-            // self.connection.flush_stream().await;
         }
         Ok(())
     }
@@ -143,13 +129,11 @@ impl Handler {
                         if password == "blabla" { // Match connection password
                             self.connection.state.registration_state = RegistrationState::PassReceived;
                         } else {
-                            // return Err(IRCError::PasswdMismatch);
-                            self.connection.write_error(&IRCError::PasswdMismatch).await;
+                            self.connection.write_error(&ErrorReply::PasswdMismatch).await;
                         }
                     },
                     _ => {
-                        // return Err(IRCError::AlreadyRegistred);
-                        self.connection.write_error(&IRCError::AlreadyRegistred).await;
+                        self.connection.write_error(&ErrorReply::AlreadyRegistred).await;
                     },
                 };
             },
@@ -169,8 +153,7 @@ impl Handler {
                 let new_nick = nickname.to_string();
                 // TODO: check if contains disallowed characters (ERR_ERRONEUSNICKNAME)
                 if false {
-                    // return Err(IRCError::ErroneusNickname);
-                    self.connection.write_error(&IRCError::ErroneusNickname).await;
+                    self.connection.write_error(&ErrorReply::ErroneusNickname).await;
                     return;
                 }
                 // TODO: check if nick in useed on network (ERR_NICKNAMEINUSE)
@@ -180,7 +163,6 @@ impl Handler {
                 if let Some(reg_state) = new_reg_state {
                     self.connection.state.registration_state = reg_state;
                 }
-                // return Ok(None);
             },
 
             Command::User{user, realname, ..} => {
@@ -192,13 +174,11 @@ impl Handler {
                         self.connection.state.registration_state = RegistrationState::Registered;
                     },
                     _ => {
-                        // return Err(IRCError::AlreadyRegistred);
-                        self.connection.write_error(&IRCError::AlreadyRegistred).await;
+                        self.connection.write_error(&ErrorReply::AlreadyRegistred).await;
                     }
                 }
                 self.connection.state.username = user.to_string();
                 self.connection.state.realname = realname.to_string();
-                // return Ok(None);
             },
 
             Command::Ping{token} => {
@@ -208,21 +188,27 @@ impl Handler {
                 }).await
             },
 
-            // Command::Join{channels, ..} => {
-            //     let mut channel_db = self.channel_db.lock().unwrap();
-            //     for (_idx, channel) in channels.split(',').enumerate() {
-            //         channel_db.push(Channel{
-            //             name: channel.to_string(),
-            //             members: Vec::from([self.connection.state.nickname.clone()]),
-            //             flags: Vec::new(),
-            //         });
-            //         self.connection.write_message(&Message{
-            //             prefix: Some(self.connection.state.username),
-            //             command: Command::Join{channel.to_string(), keys: None},
-            //         }).await;
-            //     };
-            //     drop(channel_db);
-            // },
+            Command::Join{channels, ..} => {
+                let mut channel_db = self.channel_db.lock().await;
+                let mut messages: Vec<Message> = Vec::new();
+                for (_idx, channel) in channels.split(',').enumerate() {
+                    channel_db.push(Channel{
+                        name: channel.to_string(),
+                        members: Vec::from([self.connection.state.nickname.clone()]),
+                        flags: Vec::new(),
+                    });
+                    messages.push(Message{
+                        prefix: Some(self.connection.state.username.clone()),
+                        command: Command::Join{channels: channel.to_string(), keys: None},
+                    })
+                };
+                for message in messages {
+                    self.connection.write_message(&message).await;
+                }
+                drop(channel_db);
+
+
+            },
             _ => {}
         }
     }

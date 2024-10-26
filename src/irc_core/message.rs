@@ -5,7 +5,8 @@ use bytes::Buf;
 use log::debug;
 
 use crate::irc_core::command::Command;
-use crate::irc_core::message_errors::IRCError;
+use crate::irc_core::numeric::ErrorReply;
+use crate::irc_core::error::IRCError;
 
 #[derive(Debug)]
 pub struct Message {
@@ -14,7 +15,7 @@ pub struct Message {
 }
 
 impl<'a> Message {
-    pub fn parse(src: &'a [u8]) -> Result<Option<Message>, IRCError> {
+    pub fn parse(src: &'a [u8]) -> Result<Option<Message>, ErrorReply> {
         let has_prefix = src.starts_with(b":");
         let mut msg_parts: Vec<String> = match str::from_utf8(src) {
             Ok(m) => m.trim().split(" ").map(|s| s.to_string()).collect::<Vec<String>>(),
@@ -27,7 +28,6 @@ impl<'a> Message {
         let prefix: Option<String>;
         if has_prefix {
             match msg_parts.pop() {
-                // None => return Err(IRCError::SilentDiscard),
                 None => return Ok(None),
                 Some(p) => prefix = Some(p),
             }
@@ -38,16 +38,15 @@ impl<'a> Message {
         let command: Command = match msg_parts.pop() {
             Some(c) => {
                 match Command::parse(&prefix, c, &mut msg_parts) {
-                    Ok(command) => command,
+                    Ok(Some(command)) => command,
+                    Ok(None) => return Ok(None),
                     Err(e) => {
                         match e {
-                            IRCError::SilentDiscard => return Ok(None),
                             _ => return Err(e),
                         }
                     },
                 }
             },
-            // None => return Err(IRCError::SilentDiscard),
             None => return Ok(None),
         };
         Ok(Some(Message { prefix, command}))
@@ -94,7 +93,6 @@ pub fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], IRCError>
         //     return Ok(&src.get_ref()[start..i]);
         // }
     }
-    // return Err(IRCError::SilentDiscard);
     src.set_position((end+1)as u64);
     return Err(IRCError::NoMessageLeftInBuffer);
 }

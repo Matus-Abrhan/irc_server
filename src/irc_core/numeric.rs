@@ -1,9 +1,5 @@
 #[derive(Debug, Clone, Copy)]
-pub enum IRCError{
-    ClientExited = -1,
-    SilentDiscard = -2,
-    NoMessageLeftInBuffer = -3,
-
+pub enum ErrorReply {
     NoTextToSend = 412,
     NoNicknameGiven = 431,
     ErroneusNickname = 432,
@@ -12,4 +8,9 @@ pub enum IRCError{
     NeedMoreParams = 461,
     AlreadyRegistred = 462,
     PasswdMismatch = 463,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Reply {
+
 }

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::irc_core::message_errors::IRCError;
+use crate::irc_core::numeric::ErrorReply;
 
 #[derive(Debug)]
 pub enum Command {
@@ -20,86 +20,108 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn parse(_prefix: &Option<String>, command: String, options: &mut Vec<String>) -> Result<Command, IRCError> {
+    pub fn parse(_prefix: &Option<String>, command: String, options: &mut Vec<String>) -> Result<Option<Command>, ErrorReply> {
         match &command[..] {
             "CAP" => {
-                Ok(Command::Cap)
+                Ok(Some(Command::Cap))
             },
 
             "PASS" => {
-                let password = options.pop().ok_or(IRCError::SilentDiscard)?;
-                Ok(Command::Pass{password})
+                let password = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
+                Ok(Some(Command::Pass{password}))
             },
 
             "NICK" => {
-                let nickname = options.pop().ok_or(IRCError::SilentDiscard)?;
-                Ok(Command::Nick{nickname})
+                let nickname = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
+                Ok(Some(Command::Nick{nickname}))
             },
 
             "USER" => {
-                let user = options.pop().ok_or(IRCError::SilentDiscard)?;
-                let mode = options.pop().ok_or(IRCError::SilentDiscard)?;
-                let unused = options.pop().ok_or(IRCError::SilentDiscard)?;
+                let user = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
+                let mode = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
+                let unused = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
                 options.reverse();
-                Ok(Command::User{user, mode, unused, realname: options.join(" ")})
+                Ok(Some(Command::User{user, mode, unused, realname: options.join(" ")}))
             },
 
             "PING" => {
-                let token = options.pop().ok_or(IRCError::NeedMoreParams)?;
-                Ok(Command::Ping{token})
+                let token = options.pop().ok_or(ErrorReply::NeedMoreParams)?;
+                Ok(Some(Command::Ping{token}))
             },
 
             "PONG" => {
-                // let mut server: Option<String> = None;
-                // if options.len() > 1 {
-                //     server = Some(options.pop().ok_or(IRCError::SilentDiscard)?);
-                // }
-                // let token = options.pop().ok_or(IRCError::SilentDiscard)?;
                 options.reverse();
-                let token = options.pop().ok_or(IRCError::SilentDiscard)?;
+                let token = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
                 let server = options.pop();
-                Ok(Command::Pong{server, token})
+                Ok(Some(Command::Pong{server, token}))
             },
 
             "OPER" => {
-                let name = options.pop().ok_or(IRCError::NeedMoreParams)?;
-                let password = options.pop().ok_or(IRCError::NeedMoreParams)?;
-                Ok(Command::Oper{name, password})
+                let name = options.pop().ok_or(ErrorReply::NeedMoreParams)?;
+                let password = options.pop().ok_or(ErrorReply::NeedMoreParams)?;
+                Ok(Some(Command::Oper{name, password}))
             },
 
             "QUIT" => {
                 if options.is_empty() {
-                    return Ok(Command::Quit {reason: None});
+                    return Ok(Some(Command::Quit {reason: None}));
                 }
                 options.reverse();
                 let reason = options.join(" ");
-                Ok(Command::Quit{reason: Some(reason)})
+                Ok(Some(Command::Quit{reason: Some(reason)}))
             },
 
             "ERROR" => {
-                let reason = options.pop().ok_or(IRCError::SilentDiscard)?;
-                Ok(Command::Error{reason})
+                let reason = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
+                Ok(Some(Command::Error{reason}))
             },
 
             "JOIN" => {
-                let channels = options.pop().ok_or(IRCError::SilentDiscard)?;
+                let channels = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
                 let keys = options.pop();
 
-                Ok(Command::Join{channels, keys})
+                Ok(Some(Command::Join{channels, keys}))
             },
 
             "PRIVMSG" => {
-                let targets = options.pop().ok_or(IRCError::SilentDiscard)?;
+                let targets = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
                 if options.is_empty() {
-                    return Err(IRCError::NoTextToSend);
+                    return Err(ErrorReply::NoTextToSend);
                 }
                 options.reverse();
                 let text = options.join(" ");
 
-                Ok(Command::PrivMsg{targets, text})
+                Ok(Some(Command::PrivMsg{targets, text}))
             },
 
-            _ => Err(IRCError::SilentDiscard),
+            _ => Ok(None),
         }
     }
 
@@ -112,6 +134,14 @@ impl Command {
                 if let Some(server) = server {
                     command_parts.push(server.to_string());
                 }
+            },
+            Command::Join{channels, keys} => {
+                command_parts.push("JOIN".to_string());
+                command_parts.push(channels.to_string());
+                if let Some(keys) = keys {
+                    command_parts.push(keys.to_string())
+                }
+                
             },
             _ => {}
         }
