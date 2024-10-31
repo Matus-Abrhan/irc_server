@@ -11,6 +11,8 @@ use crate::irc_core::command::Command;
 use crate::irc_core::error::IRCError;
 use crate::irc_core::numeric::ErrorReply;
 
+pub type ConnectionTxMap = Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>;
+
 enum JoinedError {
     IRCError(IRCError),
     ErrorReply(ErrorReply),
@@ -36,13 +38,13 @@ pub struct State {
 pub struct Connection {
     pub stream: TcpStream,
     pub address: SocketAddr,
-    pub connection_tx_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>,
+    pub connection_tx_map: ConnectionTxMap,
     pub buffer: BytesMut,
     pub state: State,
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream, address: SocketAddr, connection_tx_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>) -> Connection {
+    pub fn new(stream: TcpStream, address: SocketAddr, connection_tx_map: ConnectionTxMap) -> Connection {
         Connection {
             stream,
             address,
@@ -131,7 +133,7 @@ impl Connection {
 
     }
 
-    pub async fn write_response(&mut self, message: Message) {
+    pub async fn write_response(&mut self, message: &Message) {
         match &message.command {
             Command::Pass{password} => {
                 match self.state.registration_state {
@@ -250,5 +252,46 @@ impl Connection {
 
             _ => {},
         }
+    }
+
+    pub async fn process_client_result(&mut self, client_result: &Result<Option<Message>, IRCError>) -> Result<(), ()> {
+        match client_result {
+            Ok(maby_message) => {
+                match maby_message {
+                    Some(message) => self.write_response(message).await,
+                    None => {},
+                };
+                return Ok(());
+            },
+
+            Err(err) => {
+                match err {
+                    IRCError::ClientExited => {
+                        // TODO: remove from map on QUIT message?
+                        let mut connection_tx_map = self.connection_tx_map.lock().await;
+                        if connection_tx_map.remove(&self.address.to_string()).is_none() {
+                            if connection_tx_map.remove(&self.state.nickname).is_none() {
+                                warn!("This should not happen");
+                            }
+                        }
+                        drop(connection_tx_map);
+
+                        return Err(()); // NOTE: client exited -> end connection
+                    },
+                    _ => {
+                        panic!("This should not happen")
+                    },
+                };
+            },
+        };
+    }
+
+    pub async fn process_server_result(&mut self, server_result: &Result<Option<Message>, IRCError>) {
+        match server_result {
+            Ok(Some(message)) => {
+                self.write_message(&message).await;
+            },
+            _ => (),
+        };
     }
 }

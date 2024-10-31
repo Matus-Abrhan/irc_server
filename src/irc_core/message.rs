@@ -19,7 +19,6 @@ impl<'a> Message {
         let has_prefix = src.starts_with(b":");
         let mut msg_parts: Vec<String> = match str::from_utf8(src) {
             Ok(m) => m.trim().split(" ").map(|s| s.to_string()).collect::<Vec<String>>(),
-            // Err(_) => return Err(IRCError::SilentDiscard),
             Err(_) => return Ok(None),
         };
         debug!("received: {:?}", msg_parts);
@@ -84,14 +83,6 @@ pub fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], IRCError>
             src.set_position((i+2)as u64);
             return Ok(&src.get_ref()[start..i]);
         }
-
-        // if src.get_ref()[i] == b'|' {
-        //     if i - start > 512 {
-        //         return Err(IRCError::SilentDiscard);
-        //     }
-        //     src.set_position((i+1)as u64);
-        //     return Ok(&src.get_ref()[start..i]);
-        // }
     }
     src.set_position((end+1)as u64);
     return Err(IRCError::NoMessageLeftInBuffer);

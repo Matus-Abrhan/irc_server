@@ -9,21 +9,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::{self, Duration};
 
-use crate::irc_core::connection::Connection;
+use crate::irc_core::connection::{Connection, ConnectionTxMap};
 use crate::irc_core::message::Message;
 // use crate::irc_core::channel::Channel;
 use crate::irc_core::error::IRCError;
-
-// type ChannelDb = Arc<Mutex<Vec<Channel>>>;
-// type ConnectionDb = Arc<Mutex<Vec<State>>>;
 
 const BACKOFF_LIMIT: u64 = 64;
 
 struct Listener {
     listener: TcpListener,
-    // channel_db: ChannelDb,
-    // connection_db: ConnectionDb,
-    connection_tx_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>,
+    connection_tx_map: ConnectionTxMap,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
     shutdown_complete_rx: mpsc::Receiver<()>,
@@ -31,9 +26,7 @@ struct Listener {
 
 struct Handler {
     connection: Connection,
-    // channel_db: ChannelDb,
-    // connection_db: ConnectionDb,
-    task_receiver: mpsc::Receiver<Result<Option<Message>, IRCError>>,
+    connection_rx: mpsc::Receiver<Result<Option<Message>, IRCError>>,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
 }
@@ -53,9 +46,7 @@ impl Listener {
             connection_tx_map.insert(address.to_string(), connection_tx);
             drop(connection_tx_map);
             let mut handler = Handler{
-                // channel_db: self.channel_db.clone(),
-                // connection_db: self.connection_db.clone(),
-                task_receiver: connection_rx,
+                connection_rx,
                 connection: Connection::new(stream, address, self.connection_tx_map.clone()),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
@@ -92,61 +83,24 @@ impl Handler {
     async fn run(&mut self) -> Result<(), ()> {
 
         while !self.shutdown.is_shutdown() {
-            let received = tokio::select! {
-                res = self.connection.read_message() => res,
-                res = self.task_receiver.recv() => {
-                    match res {
-                        Some(res) => {
-                            match res {
-                                Ok(Some(res)) => {
-                                    self.connection.write_message(&res).await;
-                                    Ok(None)
-                                },
-                                _ => Ok(None),
-                            }
-                        },
-                        None => Ok(None),
+            tokio::select! {
+                client_result = self.connection.read_message() => {
+                    self.connection.process_client_result(&client_result).await?;
+                },
+
+                server_result_option = self.connection_rx.recv() => {
+                    if let Some(server_result) = server_result_option {
+                        self.connection.process_server_result(&server_result).await;
                     }
                 },
+
                 _ = self.shutdown.recv() => {
                     info!("Server quit");
                     return Err(());
-                }
-            };
-
-            match received {
-                Ok(maby_message) => {
-                    match maby_message {
-                        Some(message) => {
-                            self.connection.write_response(message).await
-                        },
-                        None => {
-                            (); // NOTE: No message received no response sent
-                        },
-                    }
-                },
-                Err(err) => {
-                    match err {
-                        IRCError::ClientExited => {
-                            // TODO: remove from map on QUIT message?
-                            let mut connection_tx_map = self.connection.connection_tx_map.lock().await;
-                            if connection_tx_map.remove(&self.connection.address.to_string()).is_none() {
-                                if connection_tx_map.remove(&self.connection.state.nickname).is_none() {
-                                    warn!("This should not happen");
-                                }
-                            }
-                            drop(connection_tx_map);
-
-                            return Err(()); // NOTE: client exited -> end thread
-                        },
-                        _ => {
-                            panic!("This should not happen")
-                        },
-                    }
                 },
             };
         }
-        Ok(())
+        return Ok(());
     }
 }
 
@@ -175,8 +129,6 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
 
     let mut server = Listener {
         listener,
-        // channel_db: Arc::new(Mutex::new(Vec::new())),
-        // connection_db: Arc::new(Mutex::new(Vec::new())),
         connection_tx_map: Arc::new(Mutex::new(HashMap::new())),
         notify_shutdown,
         shutdown_complete_tx,
