@@ -17,17 +17,13 @@ use crate::irc_core::error::IRCError;
 // type ChannelDb = Arc<Mutex<Vec<Channel>>>;
 // type ConnectionDb = Arc<Mutex<Vec<State>>>;
 
-
-// NOTE: could by more granular?
-// Arc<Vec<Mutex<Channel>>>
-
 const BACKOFF_LIMIT: u64 = 64;
 
 struct Listener {
     listener: TcpListener,
     // channel_db: ChannelDb,
     // connection_db: ConnectionDb,
-    task_sender_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>,
+    connection_tx_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
     shutdown_complete_rx: mpsc::Receiver<()>,
@@ -52,15 +48,15 @@ impl Listener {
 
         loop {
             let (stream, address) = self.accept().await?;
-            let (task_tx, task_rx) = mpsc::channel(1);
-            let mut map = self.task_sender_map.lock().await;
-            map.insert(address.to_string(), task_tx);
-            drop(map);
+            let (connection_tx, connection_rx) = mpsc::channel(1);
+            let mut connection_tx_map = self.connection_tx_map.lock().await;
+            connection_tx_map.insert(address.to_string(), connection_tx);
+            drop(connection_tx_map);
             let mut handler = Handler{
                 // channel_db: self.channel_db.clone(),
                 // connection_db: self.connection_db.clone(),
-                task_receiver: task_rx,
-                connection: Connection::new(stream, address, self.task_sender_map.clone()),
+                task_receiver: connection_rx,
+                connection: Connection::new(stream, address, self.connection_tx_map.clone()),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
             };
@@ -117,6 +113,7 @@ impl Handler {
                     return Err(());
                 }
             };
+
             match received {
                 Ok(maby_message) => {
                     match maby_message {
@@ -124,7 +121,6 @@ impl Handler {
                             self.connection.write_response(message).await
                         },
                         None => {
-
                             (); // NOTE: No message received no response sent
                         },
                     }
@@ -133,14 +129,13 @@ impl Handler {
                     match err {
                         IRCError::ClientExited => {
                             // TODO: remove from map on QUIT message?
-                            let mut task_sender_map = self.connection.task_sender_map.lock().await;
-                            // remove address or nick
-                            if task_sender_map.remove(&self.connection.address.to_string()).is_none() {
-                                if task_sender_map.remove(&self.connection.state.nickname).is_none() {
+                            let mut connection_tx_map = self.connection.connection_tx_map.lock().await;
+                            if connection_tx_map.remove(&self.connection.address.to_string()).is_none() {
+                                if connection_tx_map.remove(&self.connection.state.nickname).is_none() {
                                     warn!("This should not happen");
                                 }
                             }
-                            drop(task_sender_map);
+                            drop(connection_tx_map);
 
                             return Err(()); // NOTE: client exited -> end thread
                         },
@@ -182,7 +177,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
         listener,
         // channel_db: Arc::new(Mutex::new(Vec::new())),
         // connection_db: Arc::new(Mutex::new(Vec::new())),
-        task_sender_map: Arc::new(Mutex::new(HashMap::new())),
+        connection_tx_map: Arc::new(Mutex::new(HashMap::new())),
         notify_shutdown,
         shutdown_complete_tx,
         shutdown_complete_rx

@@ -1,5 +1,5 @@
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
-use log::{info, warn};
+use log::info;
 
 use irc_server::server::start_server;
 use irc_server::irc_core::message::Message;

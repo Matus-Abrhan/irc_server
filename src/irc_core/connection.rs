@@ -36,17 +36,17 @@ pub struct State {
 pub struct Connection {
     pub stream: TcpStream,
     pub address: SocketAddr,
-    pub task_sender_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>,
+    pub connection_tx_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>,
     pub buffer: BytesMut,
     pub state: State,
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream, address: SocketAddr, task_sender_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>) -> Connection {
+    pub fn new(stream: TcpStream, address: SocketAddr, connection_tx_map: Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>) -> Connection {
         Connection {
             stream,
             address,
-            task_sender_map,
+            connection_tx_map,
             buffer: BytesMut::with_capacity(1024 * 2),
             state: State{registration_state: RegistrationState::None,
                 nickname: String::new(), username: String::new(), realname: String::new()
@@ -61,7 +61,6 @@ impl Connection {
                 Err(e) => {
                     match e {
                         JoinedError::ErrorReply(e) => {
-                            // return Err(e)
                             self.write_error(&e).await;
                             return Ok(None);
                         },
@@ -93,7 +92,6 @@ impl Connection {
         let bytes = msg_parts.as_bytes();
 
         self.stream.write_all(bytes).await.unwrap();
-        // self.stream.flush().await.unwrap();
         info!("sent message: {:?}", &bytes[..]);
         self.flush_stream().await;
     }
@@ -106,7 +104,6 @@ impl Connection {
     pub async fn write_error(&mut self, error: &ErrorReply) {
 
         self.stream.write_i32(*error as i32).await.unwrap();
-        // self.stream.flush().await.unwrap();
         info!("sent error: {:?}", *error as i32);
         self.flush_stream().await;
     }
@@ -121,7 +118,6 @@ impl Connection {
                 match Message::parse(msg) {
                     Ok(m) => {
                         self.buffer.advance(len);
-                        // info!("Buffer remaining: {:}", self.buffer.remaining());
                         return Ok(m);
                     },
                     Err(e) => {
@@ -168,11 +164,11 @@ impl Connection {
                         Some(RegistrationState::NickReceived)
                     },
                     RegistrationState::UserReceived => {
-                        let mut task_sender_map = self.task_sender_map.lock().await;
-                        if let Some((_, tx)) = task_sender_map.remove_entry(&self.address.to_string()) {
-                            task_sender_map.insert(self.state.nickname.clone(), tx);
+                        let mut connection_tx_map = self.connection_tx_map.lock().await;
+                        if let Some((_, tx)) = connection_tx_map.remove_entry(&self.address.to_string()) {
+                            connection_tx_map.insert(self.state.nickname.clone(), tx);
                         }
-                        drop(task_sender_map);
+                        drop(connection_tx_map);
 
                         Some(RegistrationState::Registered)
                     },
@@ -192,11 +188,11 @@ impl Connection {
                         self.state.registration_state = RegistrationState::UserReceived;
                     },
                     RegistrationState::NickReceived=> {
-                        let mut task_sender_map = self.task_sender_map.lock().await;
-                        if let Some((_, tx)) = task_sender_map.remove_entry(&self.address.to_string()) {
-                            task_sender_map.insert(self.state.nickname.clone(), tx);
+                        let mut connection_tx_map = self.connection_tx_map.lock().await;
+                        if let Some((_, tx)) = connection_tx_map.remove_entry(&self.address.to_string()) {
+                            connection_tx_map.insert(self.state.nickname.clone(), tx);
                         }
-                        drop(task_sender_map);
+                        drop(connection_tx_map);
 
                         self.state.registration_state = RegistrationState::Registered;
                     },
@@ -216,9 +212,9 @@ impl Connection {
             },
 
             Command::PrivMsg{targets, text} => {
-                let task_sender_map = self.task_sender_map.lock().await;
+                let connection_tx_map = self.connection_tx_map.lock().await;
                 let target_arr: Vec<&str> = targets.split(',').collect();
-                for (target, channel) in task_sender_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
+                for (target, channel) in connection_tx_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
                     let _ = channel.send(Ok(Some(Message{
                         prefix: Some(":".to_owned()+&self.state.nickname),
                         command: Command::PrivMsg{
@@ -227,7 +223,7 @@ impl Connection {
                         },
                     }))).await;
                 }
-                drop(task_sender_map)
+                drop(connection_tx_map)
             },
 
             // Command::Join{channels, ..} => {
