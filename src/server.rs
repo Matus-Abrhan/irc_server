@@ -9,9 +9,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::{self, Duration};
 
-use crate::irc_core::connection::{Connection, State};
+use crate::irc_core::connection::Connection;
 use crate::irc_core::message::Message;
-use crate::irc_core::channel::Channel;
+// use crate::irc_core::channel::Channel;
 use crate::irc_core::error::IRCError;
 
 // type ChannelDb = Arc<Mutex<Vec<Channel>>>;
@@ -100,7 +100,15 @@ impl Handler {
                 res = self.connection.read_message() => res,
                 res = self.task_receiver.recv() => {
                     match res {
-                        Some(res) => res,
+                        Some(res) => {
+                            match res {
+                                Ok(Some(res)) => {
+                                    self.connection.write_message(&res).await;
+                                    Ok(None)
+                                },
+                                _ => Ok(None),
+                            }
+                        },
                         None => Ok(None),
                     }
                 },
@@ -124,6 +132,16 @@ impl Handler {
                 Err(err) => {
                     match err {
                         IRCError::ClientExited => {
+                            // TODO: remove from map on QUIT message?
+                            let mut task_sender_map = self.connection.task_sender_map.lock().await;
+                            // remove address or nick
+                            if task_sender_map.remove(&self.connection.address.to_string()).is_none() {
+                                if task_sender_map.remove(&self.connection.state.nickname).is_none() {
+                                    warn!("This should not happen");
+                                }
+                            }
+                            drop(task_sender_map);
+
                             return Err(()); // NOTE: client exited -> end thread
                         },
                         _ => {

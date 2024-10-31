@@ -153,17 +153,6 @@ impl Connection {
             },
 
             Command::Nick{nickname} => {
-                let new_reg_state: Option<RegistrationState> = match self.state.registration_state {
-                    RegistrationState::PassReceived => {
-                        Some(RegistrationState::NickReceived)
-                    },
-                    RegistrationState::UserReceived => {
-                        Some(RegistrationState::Registered)
-                    },
-                    _ => {
-                        None
-                    },
-                };
                 let new_nick = nickname.to_string();
                 // TODO: check if contains disallowed characters (ERR_ERRONEUSNICKNAME)
                 if false {
@@ -174,6 +163,24 @@ impl Connection {
                 // TODO: ERR_NICKCOLLISION ???
 
                 self.state.nickname = new_nick;
+                let new_reg_state: Option<RegistrationState> = match self.state.registration_state {
+                    RegistrationState::PassReceived => {
+                        Some(RegistrationState::NickReceived)
+                    },
+                    RegistrationState::UserReceived => {
+                        let mut task_sender_map = self.task_sender_map.lock().await;
+                        if let Some((_, tx)) = task_sender_map.remove_entry(&self.address.to_string()) {
+                            task_sender_map.insert(self.state.nickname.clone(), tx);
+                        }
+                        drop(task_sender_map);
+
+                        Some(RegistrationState::Registered)
+                    },
+                    _ => {
+                        None
+                    },
+                };
+
                 if let Some(reg_state) = new_reg_state {
                     self.state.registration_state = reg_state;
                 }
@@ -185,6 +192,12 @@ impl Connection {
                         self.state.registration_state = RegistrationState::UserReceived;
                     },
                     RegistrationState::NickReceived=> {
+                        let mut task_sender_map = self.task_sender_map.lock().await;
+                        if let Some((_, tx)) = task_sender_map.remove_entry(&self.address.to_string()) {
+                            task_sender_map.insert(self.state.nickname.clone(), tx);
+                        }
+                        drop(task_sender_map);
+
                         self.state.registration_state = RegistrationState::Registered;
                     },
                     _ => {
@@ -202,13 +215,20 @@ impl Connection {
                 }).await
             },
 
-            // Command::PrivMsg{targets, text} => {
-            //         let task_sender_map = self.task_sender_map.lock().await;
-            //         for value in task_sender_map.values() {
-            //             value.send().await
-            //         }
-            //         drop(task_sender_map)
-            // },
+            Command::PrivMsg{targets, text} => {
+                let task_sender_map = self.task_sender_map.lock().await;
+                let target_arr: Vec<&str> = targets.split(',').collect();
+                for (target, channel) in task_sender_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
+                    let _ = channel.send(Ok(Some(Message{
+                        prefix: Some(":".to_owned()+&self.state.nickname),
+                        command: Command::PrivMsg{
+                            targets: target.to_string(),
+                            text: text.to_string()
+                        },
+                    }))).await;
+                }
+                drop(task_sender_map)
+            },
 
             // Command::Join{channels, ..} => {
             //     let mut channel_db = self.channel_db.lock().await;

@@ -128,22 +128,52 @@ impl Command {
     pub fn get_parts(&self) -> Vec<String> {
         let mut command_parts: Vec<String> = Vec::new();
         match self {
+            Command::Ping{token} => {
+                command_parts.push("PING".to_string());
+                command_parts.push(token.to_string());
+            },
+
             Command::Pong{server, token} => {
                 command_parts.push("PONG".to_string());
-                command_parts.push(token.to_string());
                 if let Some(server) = server {
                     command_parts.push(server.to_string());
                 }
+                command_parts.push(token.to_string());
             },
+
             Command::Join{channels, keys} => {
                 command_parts.push("JOIN".to_string());
                 command_parts.push(channels.to_string());
                 if let Some(keys) = keys {
                     command_parts.push(keys.to_string())
                 }
-                
             },
-            _ => {}
+
+            Command::PrivMsg{targets, text} => {
+                command_parts.push("PRIVMSG".to_string());
+                command_parts.push(targets.to_string());
+                command_parts.push(text.to_string());
+            },
+
+            Command::Pass{password} => {
+                command_parts.push("PASS".to_string());
+                command_parts.push(password.to_string());
+            },
+
+            Command::Nick{nickname} => {
+                command_parts.push("NICK".to_string());
+                command_parts.push(nickname.to_string());
+            },
+
+            Command::User{user, mode, unused, realname} => {
+                command_parts.push("USER".to_string());
+                command_parts.push(user.to_string());
+                command_parts.push(mode.to_string());
+                command_parts.push(unused.to_string());
+                command_parts.push(realname.to_string());
+            },
+
+            _ => {},
         }
         return command_parts;
     }
