@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::irc_core::numeric::ErrorReply;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Command {
     Cap,  //{subcommand: String, capabilities: String},
     Pass{password: String}, //, version: Option<String>, flags: Option<String>, options: Option<Vec<String>>
@@ -20,7 +20,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn parse(_prefix: &Option<String>, command: String, options: &mut Vec<String>) -> Result<Option<Command>, ErrorReply> {
+    pub fn deserialize(_prefix: &Option<String>, command: String, options: &mut Vec<String>) -> Result<Option<Command>, ErrorReply> {
         match &command[..] {
             "CAP" => {
                 Ok(Some(Command::Cap))
@@ -60,7 +60,9 @@ impl Command {
             },
 
             "PING" => {
-                let token = options.pop().ok_or(ErrorReply::NeedMoreParams)?;
+                let token = options.pop().ok_or(
+                    ErrorReply::NeedMoreParams{client: String::new(), command: String::new()}
+                )?;
                 Ok(Some(Command::Ping{token}))
             },
 
@@ -75,8 +77,12 @@ impl Command {
             },
 
             "OPER" => {
-                let name = options.pop().ok_or(ErrorReply::NeedMoreParams)?;
-                let password = options.pop().ok_or(ErrorReply::NeedMoreParams)?;
+                let name = options.pop().ok_or(
+                    ErrorReply::NeedMoreParams{client: String::new(), command: String::new()}
+                )?;
+                let password = options.pop().ok_or(
+                    ErrorReply::NeedMoreParams{client: String::new(), command: String::new()}
+                )?;
                 Ok(Some(Command::Oper{name, password}))
             },
 
@@ -113,7 +119,7 @@ impl Command {
                     None => return Ok(None),
                 };
                 if options.is_empty() {
-                    return Err(ErrorReply::NoTextToSend);
+                    return Err(ErrorReply::NoTextToSend{client: String::new()});
                 }
                 options.reverse();
                 let text = options.join(" ");
@@ -125,7 +131,7 @@ impl Command {
         }
     }
 
-    pub fn get_parts(&self) -> Vec<String> {
+    pub fn serialize(&self) -> Vec<String> {
         let mut command_parts: Vec<String> = Vec::new();
         match self {
             Command::Ping{token} => {

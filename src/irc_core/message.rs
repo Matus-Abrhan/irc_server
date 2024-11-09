@@ -5,21 +5,29 @@ use bytes::Buf;
 use log::debug;
 
 use crate::irc_core::command::Command;
-use crate::irc_core::numeric::ErrorReply;
+use crate::irc_core::numeric::{Reply, ErrorReply};
 use crate::irc_core::error::IRCError;
 
 #[derive(Debug)]
 pub struct Message {
     pub prefix: Option<String>,
-    pub command: Command,
+    // pub content: Command,
+    pub content: Content,
+}
+
+#[derive(Debug)]
+pub enum Content {
+    Command(Command),
+    Reply(Reply),
+    ErrorReply(ErrorReply),
 }
 
 impl<'a> Message {
-    pub fn parse(src: &'a [u8]) -> Result<Option<Message>, ErrorReply> {
+    pub fn serialize(src: &'a [u8]) -> Option<Message> {
         let has_prefix = src.starts_with(b":");
         let mut msg_parts: Vec<String> = match str::from_utf8(src) {
             Ok(m) => m.trim().split(" ").map(|s| s.to_string()).collect::<Vec<String>>(),
-            Err(_) => return Ok(None),
+            Err(_) => return None,
         };
         debug!("received: {:?}", msg_parts);
         msg_parts.reverse();
@@ -27,28 +35,24 @@ impl<'a> Message {
         let prefix: Option<String>;
         if has_prefix {
             match msg_parts.pop() {
-                None => return Ok(None),
+                None => return None,
                 Some(p) => prefix = Some(p),
             }
         } else {
             prefix = None;
         }
 
-        let command: Command = match msg_parts.pop() {
+        let content: Content = match msg_parts.pop() {
             Some(c) => {
-                match Command::parse(&prefix, c, &mut msg_parts) {
-                    Ok(Some(command)) => command,
-                    Ok(None) => return Ok(None),
-                    Err(e) => {
-                        match e {
-                            _ => return Err(e),
-                        }
-                    },
+                match Command::deserialize(&prefix, c, &mut msg_parts) {
+                    Ok(Some(command)) => Content::Command(command),
+                    Ok(None) => return None,
+                    Err(error) => Content::ErrorReply(error),
                 }
             },
-            None => return Ok(None),
+            None => return None,
         };
-        Ok(Some(Message { prefix, command}))
+        Some(Message{prefix, content})
     }
 
     pub fn check(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], IRCError> {
@@ -59,15 +63,25 @@ impl<'a> Message {
         return get_message(src);
     }
 
-    pub fn get_parts(&self) -> Vec<String> {
+    pub fn deserialize(&self) -> Vec<String> {
         let mut msg_parts: Vec<String> = Vec::new();
         if let Some(prefix) = &self.prefix {
-            msg_parts.push(prefix.to_string());
+            msg_parts.push(":".to_owned()+&prefix.to_string());
         }
-        msg_parts.append(&mut self.command.get_parts());
+        msg_parts.append(&mut self.content.get_parts());
 
         debug!("sent: {:?}", msg_parts);
         return msg_parts;
+    }
+}
+
+impl Content {
+    fn get_parts(&self) -> Vec<String> {
+        return match self {
+            Content::Command(content) => content.serialize(),
+            Content::Reply(content) => content.serialize(),
+            Content::ErrorReply(content) => content.serialize(),
+        };
     }
 }
 

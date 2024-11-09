@@ -9,16 +9,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::{self, Duration};
 
-use crate::irc_core::connection::{Connection, ConnectionTxMap};
+use crate::irc_core::connection::{Connection, ConnectionTxMap, ChannelMap};
 use crate::irc_core::message::Message;
-// use crate::irc_core::channel::Channel;
-use crate::irc_core::error::IRCError;
+// use crate::irc_core::error::IRCError;
 
 const BACKOFF_LIMIT: u64 = 64;
 
 struct Listener {
     listener: TcpListener,
     connection_tx_map: ConnectionTxMap,
+    channel_map: ChannelMap,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
     shutdown_complete_rx: mpsc::Receiver<()>,
@@ -26,7 +26,7 @@ struct Listener {
 
 struct Handler {
     connection: Connection,
-    connection_rx: mpsc::Receiver<Result<Option<Message>, IRCError>>,
+    connection_rx: mpsc::Receiver<Message>,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
 }
@@ -41,13 +41,20 @@ impl Listener {
 
         loop {
             let (stream, address) = self.accept().await?;
+
             let (connection_tx, connection_rx) = mpsc::channel(1);
             let mut connection_tx_map = self.connection_tx_map.lock().await;
             connection_tx_map.insert(address.to_string(), connection_tx);
             drop(connection_tx_map);
+
             let mut handler = Handler{
                 connection_rx,
-                connection: Connection::new(stream, address, self.connection_tx_map.clone()),
+                connection: Connection::new(
+                    stream,
+                    address,
+                    self.connection_tx_map.clone(),
+                    self.channel_map.clone(),
+                ),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
             };
@@ -81,7 +88,6 @@ impl Listener {
 
 impl Handler {
     async fn run(&mut self) -> Result<(), ()> {
-
         while !self.shutdown.is_shutdown() {
             tokio::select! {
                 client_result = self.connection.read_message() => {
@@ -130,6 +136,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
     let mut server = Listener {
         listener,
         connection_tx_map: Arc::new(Mutex::new(HashMap::new())),
+        channel_map: Arc::new(Mutex::new(HashMap::new())),
         notify_shutdown,
         shutdown_complete_tx,
         shutdown_complete_rx

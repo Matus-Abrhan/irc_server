@@ -8,15 +8,14 @@ use log::{info, warn};
 
 use crate::irc_core::message::Message;
 use crate::irc_core::command::Command;
+use crate::irc_core::channel::Channel;
+use crate::irc_core::numeric::{Reply, ErrorReply};
+use crate::irc_core::message::Content;
 use crate::irc_core::error::IRCError;
-use crate::irc_core::numeric::ErrorReply;
 
-pub type ConnectionTxMap = Arc<Mutex<HashMap<String, mpsc::Sender<Result<Option<Message>, IRCError>>>>>;
 
-enum JoinedError {
-    IRCError(IRCError),
-    ErrorReply(ErrorReply),
-}
+pub type ConnectionTxMap = Arc<Mutex<HashMap<String, mpsc::Sender<Message>>>>;
+pub type ChannelMap = Arc<Mutex<HashMap<String, Channel>>>;
 
 #[derive(Clone, Copy)]
 pub enum RegistrationState {
@@ -39,19 +38,23 @@ pub struct Connection {
     pub stream: TcpStream,
     pub address: SocketAddr,
     pub connection_tx_map: ConnectionTxMap,
+    pub channel_map: ChannelMap,
     pub buffer: BytesMut,
     pub state: State,
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream, address: SocketAddr, connection_tx_map: ConnectionTxMap) -> Connection {
+    pub fn new(stream: TcpStream, address: SocketAddr, connection_tx_map: ConnectionTxMap, channel_map: ChannelMap) -> Connection {
         Connection {
             stream,
             address,
             connection_tx_map,
+            channel_map,
             buffer: BytesMut::with_capacity(1024 * 2),
             state: State{registration_state: RegistrationState::None,
-                nickname: String::new(), username: String::new(), realname: String::new()
+                nickname: String::new(),
+                username: String::new(),
+                realname: String::new(),
             }
         }
     }
@@ -62,16 +65,8 @@ impl Connection {
                 Ok(m) => return Ok(m),
                 Err(e) => {
                     match e {
-                        JoinedError::ErrorReply(e) => {
-                            self.write_error(&e).await;
-                            return Ok(None);
-                        },
-                        JoinedError::IRCError(e) => {
-                            match e {
-                                IRCError::NoMessageLeftInBuffer => (),
-                                IRCError::ClientExited => panic!("This should not happen"),
-                            };
-                        }
+                        IRCError::NoMessageLeftInBuffer => (),
+                        IRCError::ClientExited => panic!("This should not happen"),
                     }
                 },
             }
@@ -88,8 +83,8 @@ impl Connection {
         }
     }
 
-    pub async fn write_message(&mut self, message: &Message) {
-        let mut msg_parts = message.get_parts().join(" ");
+    async fn _write_message(&mut self, message: &Message) {
+        let mut msg_parts = message.deserialize().join(" ");
         msg_parts.push_str("\r\n");
         let bytes = msg_parts.as_bytes();
 
@@ -98,54 +93,62 @@ impl Connection {
         self.flush_stream().await;
     }
 
+    pub async fn write_command(&mut self, command: &Command) {
+        self._write_message(&Message{
+            prefix: None,
+            content: Content::Command(command.clone()),
+        }).await;
+    }
+
+    pub async fn write_error(&mut self, error: &ErrorReply) {
+        self._write_message(&Message{
+            prefix: None,
+            content: Content::ErrorReply(error.clone()),
+        }).await;
+    }
+
+    pub async fn write_reply(&mut self, reply: &Reply) {
+        self._write_message(&Message{
+            prefix: Some("server1".to_string()),
+            content: Content::Reply(reply.clone())
+        }).await;
+    }
+
     pub async fn flush_stream(&mut self) {
         // TODO: setup ability to queue messages
         self.stream.flush().await.unwrap();
     }
 
-    pub async fn write_error(&mut self, error: &ErrorReply) {
-
-        self.stream.write_i32(*error as i32).await.unwrap();
-        info!("sent error: {:?}", *error as i32);
-        self.flush_stream().await;
-    }
-
-    fn parse_frame(&mut self) -> Result<Option<Message>, JoinedError> {
+    fn parse_frame(&mut self) -> Result<Option<Message>, IRCError> {
         let mut cursor = Cursor::new(self.buffer.chunk());
         match Message::check(&mut cursor) {
             Ok(msg) => {
                 let len = cursor.position() as usize;
                 cursor.set_position(0);
 
-                match Message::parse(msg) {
-                    Ok(m) => {
-                        self.buffer.advance(len);
-                        return Ok(m);
-                    },
-                    Err(e) => {
-                        self.buffer.advance(len);
-                        return Err(JoinedError::ErrorReply(e))
-                    },
-                };
+                let maby_messaage = Message::serialize(msg);
+                self.buffer.advance(len);
+                return Ok(maby_messaage);
             },
-            Err(e) => return Err(JoinedError::IRCError(e)),
+            Err(e) => return Err(e),
+            // TODO: use ? operator
         };
 
     }
 
-    pub async fn write_response(&mut self, message: &Message) {
-        match &message.command {
+    pub async fn write_response(&mut self, command: &Command) {
+        match &command {
             Command::Pass{password} => {
                 match self.state.registration_state {
                     RegistrationState::None => {
                         if password == "blabla" { // Match connection password
                             self.state.registration_state = RegistrationState::PassReceived;
                         } else {
-                            self.write_error(&ErrorReply::PasswdMismatch).await;
+                            self.write_error(&ErrorReply::PasswdMismatch{client: self.state.nickname.clone()}).await;
                         }
                     },
                     _ => {
-                        self.write_error(&ErrorReply::AlreadyRegistred).await;
+                        self.write_error(&ErrorReply::AlreadyRegistred{client: self.state.nickname.clone()}).await;
                     },
                 };
             },
@@ -154,7 +157,7 @@ impl Connection {
                 let new_nick = nickname.to_string();
                 // TODO: check if contains disallowed characters (ERR_ERRONEUSNICKNAME)
                 if false {
-                    self.write_error(&ErrorReply::ErroneusNickname).await;
+                    self.write_error(&ErrorReply::ErroneusNickname{client: self.state.nickname.clone(), nick: self.state.nickname.clone()}).await;
                     return;
                 }
                 // TODO: check if nick in useed on network (ERR_NICKNAMEINUSE)
@@ -199,7 +202,7 @@ impl Connection {
                         self.state.registration_state = RegistrationState::Registered;
                     },
                     _ => {
-                        self.write_error(&ErrorReply::AlreadyRegistred).await;
+                        self.write_error(&ErrorReply::AlreadyRegistred{client: self.state.nickname.clone()}).await;
                     }
                 }
                 self.state.username = user.to_string();
@@ -207,48 +210,100 @@ impl Connection {
             },
 
             Command::Ping{token} => {
-                self.write_message(&Message{
-                    prefix: None,
-                    command: Command::Pong{ server: None, token: token.to_string()}
-                }).await
+                self.write_command(&Command::Pong{server: None, token: token.to_string()}).await;
             },
 
             Command::PrivMsg{targets, text} => {
-                let connection_tx_map = self.connection_tx_map.lock().await;
                 let target_arr: Vec<&str> = targets.split(',').collect();
-                for (target, channel) in connection_tx_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
-                    let _ = channel.send(Ok(Some(Message{
-                        prefix: Some(":".to_owned()+&self.state.nickname),
-                        command: Command::PrivMsg{
+
+                // NOTE: sned to channel targets
+                // TODO: remake locking two mutexes in row
+                let channel_map = self.channel_map.lock().await;
+                let connection_tx_map = self.connection_tx_map.lock().await;
+                for (channel_name, channel) in channel_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
+                    for (_target, tx) in connection_tx_map.iter().filter(|(k, _v)| channel.members.contains(k) && **k != self.state.nickname) {
+                        let _ = tx.send(Message{
+                            // prefix: Some(":".to_owned()+&self.state.nickname),
+                            prefix: None,
+                            content: Content::Command(Command::PrivMsg{
+                                // targets: target.to_string(),
+                                targets: channel_name.to_string(),
+                                text: text.to_string()
+                            }),
+                        }).await;
+                    }
+                }
+                drop(connection_tx_map);
+                drop(channel_map);
+
+
+                // NOTE: sned to client targets
+                let connection_tx_map = self.connection_tx_map.lock().await;
+                for (target, tx) in connection_tx_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
+                    let _ = tx.send(Message{
+                        prefix: Some(self.state.nickname.to_string()),
+                        content: Content::Command(Command::PrivMsg{
                             targets: target.to_string(),
                             text: text.to_string()
-                        },
-                    }))).await;
+                        }),
+                    }).await;
                 }
-                drop(connection_tx_map)
+                drop(connection_tx_map);
             },
 
-            // Command::Join{channels, ..} => {
-            //     let mut channel_db = self.channel_db.lock().await;
-            //     let mut messages: Vec<Message> = Vec::new();
-            //     for (_idx, channel) in channels.split(',').enumerate() {
-            //         channel_db.push(Channel{
-            //             name: channel.to_string(),
-            //             members: Vec::from([self.connection.state.nickname.clone()]),
-            //             flags: Vec::new(),
-            //         });
-            //         messages.push(Message{
-            //             prefix: Some(self.connection.state.username.clone()),
-            //             command: Command::Join{channels: channel.to_string(), keys: None},
-            //         })
-            //     };
-            //     for message in messages {
-            //         self.connection.write_message(&message).await;
-            //     }
-            //     drop(channel_db);
-            //
-            //
-            // },
+            Command::Join{channels, ..} => {
+                // TODO: check if user is registered
+                let mut reply_vec: Vec<Reply> = Vec::new();
+                let mut channel_map = self.channel_map.lock().await;
+                for channel_name in channels.split(',') {
+                    match channel_map.get_mut(channel_name) {
+                        Some(channel) => {
+                            (*channel).members.push(self.state.nickname.clone());
+                        },
+                        None => {
+                            assert_eq!(
+                                channel_map.insert(
+                                    channel_name.to_string(),
+                                    Channel::new(
+                                        channel_name.to_string(),
+                                        self.state.nickname.clone(),
+                                    )
+
+                                ),
+                                None
+                            );
+                        },
+                    };
+                    let channel = channel_map.get_mut(channel_name).unwrap();
+
+                    // TODO: MOTD
+                    reply_vec.push(Reply::MotdStart{client: self.state.nickname.clone(), line: "server1".to_string()});
+                    reply_vec.push(Reply::Motd{client: self.state.nickname.clone(), line: "MOTD".to_string()});
+                    reply_vec.push(Reply::EndOfMotd{client: self.state.nickname.clone()});
+
+                    // TODO: List of users
+                    reply_vec.push(Reply::NameReply{
+                        client: self.state.nickname.clone(),
+                        symbol: '@',
+                        channel: channel.name.clone(),
+                        members: channel.members.clone(),
+                    });
+                    reply_vec.push(Reply::EndOfNames{client: self.state.nickname.clone(), channel: channel.name.clone()})
+
+                };
+                warn!("{:?}", channel_map);
+                drop(channel_map);
+
+                // TODO: write to all channel memebers
+                self._write_message(&Message{
+                    prefix: Some(self.state.nickname.to_string()),
+                    content: Content::Command(Command::Join{channels: "#channel1".to_string(), keys: None})
+                }).await;
+
+                for reply in reply_vec {
+                    self.write_reply(&reply).await;
+                }
+            },
 
             _ => {},
         }
@@ -258,7 +313,12 @@ impl Connection {
         match client_result {
             Ok(maby_message) => {
                 match maby_message {
-                    Some(message) => self.write_response(message).await,
+                    Some(message) => {
+                        if let Content::Command(command) = &message.content {
+                            self.write_response(&command).await
+                        }
+                        // TODO: ErrorReply field need to be filled out
+                    },
                     None => {},
                 };
                 return Ok(());
@@ -286,12 +346,13 @@ impl Connection {
         };
     }
 
-    pub async fn process_server_result(&mut self, server_result: &Result<Option<Message>, IRCError>) {
-        match server_result {
-            Ok(Some(message)) => {
-                self.write_message(&message).await;
-            },
-            _ => (),
-        };
+    pub async fn process_server_result(&mut self, server_result: &Message) {
+        // match server_result {
+        //     Ok(Some(message)) => {
+        //         self.write_message(&message).await;
+        //     },
+        //     _ => (),
+        // };
+        self._write_message(server_result).await;
     }
 }
