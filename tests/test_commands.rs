@@ -183,10 +183,10 @@ async fn test_channel() {
             text: "11111111".to_string(),
         }),
     }).await;
-    let mut response = [0; 31];
+    let mut response = [0; 35];
     client2.read(&mut response).await.unwrap();
     assert_eq!(
-        ":nick1 PRIVMSG nick2 11111111\r\n".as_bytes(),
+        ":nick1 PRIVMSG #channel1 11111111\r\n".as_bytes(),
         &response
     );
 
