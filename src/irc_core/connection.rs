@@ -32,6 +32,7 @@ pub struct State {
     pub nickname: String,
     pub username: String,
     pub realname: String,
+    pub hostname: String
 }
 
 pub struct Connection {
@@ -55,6 +56,7 @@ impl Connection {
                 nickname: String::new(),
                 username: String::new(),
                 realname: String::new(),
+                hostname: String::new(),
             }
         }
     }
@@ -222,11 +224,15 @@ impl Connection {
                 let connection_tx_map = self.connection_tx_map.lock().await;
                 for (channel_name, channel) in channel_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
                     for (_target, tx) in connection_tx_map.iter().filter(|(k, _v)| channel.members.contains(k) && **k != self.state.nickname) {
+                        // let prefix = format!("{}!{}@{}",
+                        //     self.state.nickname.to_string(),
+                        //     self.state.username.to_string(),
+                        //     "server1".to_string()
+                        // );
                         let _ = tx.send(Message{
-                            // prefix: Some(":".to_owned()+&self.state.nickname),
-                            prefix: None,
+                            prefix: Some(self.state.nickname.to_string()),
+                            // prefix: Some(prefix),
                             content: Content::Command(Command::PrivMsg{
-                                // targets: target.to_string(),
                                 targets: channel_name.to_string(),
                                 text: text.to_string()
                             }),
@@ -253,7 +259,8 @@ impl Connection {
 
             Command::Join{channels, ..} => {
                 // TODO: check if user is registered
-                let mut reply_vec: Vec<Reply> = Vec::new();
+
+                let mut to_members: Vec<Message> = Vec::new();
                 let mut channel_map = self.channel_map.lock().await;
                 for channel_name in channels.split(',') {
                     match channel_map.get_mut(channel_name) {
@@ -268,7 +275,6 @@ impl Connection {
                                         channel_name.to_string(),
                                         self.state.nickname.clone(),
                                     )
-
                                 ),
                                 None
                             );
@@ -276,33 +282,66 @@ impl Connection {
                     };
                     let channel = channel_map.get_mut(channel_name).unwrap();
 
-                    // TODO: MOTD
-                    reply_vec.push(Reply::MotdStart{client: self.state.nickname.clone(), line: "server1".to_string()});
-                    reply_vec.push(Reply::Motd{client: self.state.nickname.clone(), line: "MOTD".to_string()});
-                    reply_vec.push(Reply::EndOfMotd{client: self.state.nickname.clone()});
+                    // // TODO: MOTD
+                    // reply_vec.push(Reply::MotdStart{client: self.state.nickname.clone(), line: "server1".to_string()});
+                    // reply_vec.push(Reply::Motd{client: self.state.nickname.clone(), line: "MOTD".to_string()});
+                    // reply_vec.push(Reply::EndOfMotd{client: self.state.nickname.clone()});
+                    //
+                    // // TODO: List of users
+                    // reply_vec.push(Reply::NameReply{
+                    //     client: self.state.nickname.clone(),
+                    //     symbol: '@',
+                    //     channel: channel.name.clone(),
+                    //     members: channel.members.clone(),
+                    // });
+                    // reply_vec.push(Reply::EndOfNames{client: self.state.nickname.clone(), channel: channel.name.clone()})
 
-                    // TODO: List of users
-                    reply_vec.push(Reply::NameReply{
-                        client: self.state.nickname.clone(),
-                        symbol: '@',
-                        channel: channel.name.clone(),
-                        members: channel.members.clone(),
+                    to_members.push(Message{
+                        prefix: Some(self.state.nickname.to_string()),
+                        content: Content::Command(Command::Join{channels: channel.name.to_string(), keys: None})
                     });
-                    reply_vec.push(Reply::EndOfNames{client: self.state.nickname.clone(), channel: channel.name.clone()})
-
                 };
                 warn!("{:?}", channel_map);
                 drop(channel_map);
 
                 // TODO: write to all channel memebers
-                self._write_message(&Message{
-                    prefix: Some(self.state.nickname.to_string()),
-                    content: Content::Command(Command::Join{channels: "#channel1".to_string(), keys: None})
-                }).await;
+                for message in to_members {
+                    self._write_message(&message).await;
+                }
+
+
+                // TODO: write to client
+                // for reply in reply_vec {
+                //     self.write_reply(&reply).await;
+                // }
+
+            },
+
+            Command::Who{mask} => {
+                let mut reply_vec: Vec<Reply> = Vec::new();
+                let channel_map = self.channel_map.lock().await;
+                if let Some(channel) = channel_map.get(mask) {
+                    for member in channel.members.iter() {
+                        reply_vec.push(Reply::WhoReply{
+                            client: member.to_string(),
+                            channel: channel.name.to_string(),
+                            username: member.to_string(),
+                            host: "0.0.0.0".to_string(),
+                            server: "server1".to_string(),
+                            nick: member.to_string(),
+                            flags: "".to_string(),
+                            hopcount: "0".to_string(),
+                            realname: member.to_string(),
+                        })
+                    }
+                }
+                drop(channel_map);
 
                 for reply in reply_vec {
                     self.write_reply(&reply).await;
                 }
+
+                self.write_reply(&Reply::EndOfWho{client: self.state.nickname.to_string(), mask: mask.to_string()}).await;
             },
 
             _ => {},

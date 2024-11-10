@@ -29,6 +29,8 @@ pub enum ReplyId {
     IdMotd = 372,
     IdMotdStart = 375,
     IdEndOfMotd = 376,
+    IdWhoReply = 352,
+    IdEndOfWho = 315,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,8 @@ pub enum Reply {
     Motd{client: String, line: String},
     MotdStart{client: String, line: String},
     EndOfMotd{client: String},
+    WhoReply{client: String, channel: String, username: String, host: String, server: String, nick: String, flags: String, hopcount: String, realname: String},
+    EndOfWho{client: String, mask: String},
 }
 
 impl ErrorReply {
@@ -149,6 +153,26 @@ impl Reply {
                 command_parts.push((ReplyId::IdEndOfMotd as i32).to_string());
                 command_parts.push(client.to_string());
                 command_parts.push(":End of /MOTD command.".to_string());
+            },
+
+            Reply::WhoReply{client, channel, username, host, server, nick, flags, hopcount, realname} => {
+                command_parts.push((ReplyId::IdWhoReply as i32).to_string());
+                command_parts.push(client.to_string());
+                command_parts.push(channel.to_string());
+                command_parts.push(username.to_string());
+                command_parts.push(host.to_string());
+                command_parts.push(server.to_string());
+                command_parts.push(nick.to_string());
+                command_parts.push(flags.to_string());
+                command_parts.push(hopcount.to_string());
+                command_parts.push(realname.to_string());
+            },
+
+            Reply::EndOfWho{client, mask} => {
+                command_parts.push((ReplyId::IdEndOfWho as i32).to_string());
+                command_parts.push(client.to_string());
+                command_parts.push(mask.to_string());
+                command_parts.push(":End of WHO list".to_string());
             },
         };
         return command_parts;

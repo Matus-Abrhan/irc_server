@@ -17,6 +17,8 @@ pub enum Command {
     Join{channels: String, keys: Option<String>},
 
     PrivMsg{targets: String, text: String},
+
+    Who{mask: String},
 }
 
 impl Command {
@@ -127,6 +129,14 @@ impl Command {
                 Ok(Some(Command::PrivMsg{targets, text}))
             },
 
+            "WHO" => {
+                let mask = match options.pop() {
+                    Some(res) => res,
+                    None => return Ok(None),
+                };
+                Ok(Some(Command::Who{mask}))
+            },
+
             _ => Ok(None),
         }
     }
@@ -177,6 +187,11 @@ impl Command {
                 command_parts.push(mode.to_string());
                 command_parts.push(unused.to_string());
                 command_parts.push(realname.to_string());
+            },
+
+            Command::Who{mask} => {
+                command_parts.push("WHO".to_string());
+                command_parts.push(mask.to_string());
             },
 
             _ => {},
