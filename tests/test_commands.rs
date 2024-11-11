@@ -1,12 +1,13 @@
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use log::info;
+use std::time::Instant;
 
 use irc_server::server::start_server;
 use irc_server::irc_core::message::{Message, Content};
 use irc_server::irc_core::command::Command;
 
 fn init_logger() {
-    // NOTE: also use "RUST_LOG=debug cargo test"
+    // NOTE: run tests with `RUST_LOG=debug cargo test -- --nocapture`
     let _ = env_logger::builder().is_test(true).try_init();
 }
 
@@ -46,17 +47,21 @@ async fn register(stream: &mut TcpStream, nickname: String) {
 
 #[tokio::test]
 async fn test_ping() {
+    init_logger();
     let addr = start_server().await;
-
     let mut stream = TcpStream::connect(addr).await.unwrap();
 
     let mut msg_parts = Message{prefix: None, content: Content::Command(Command::Ping{token: "token".to_string()})}.deserialize().join(" ");
     msg_parts.push_str("\r\n");
     let bytes = msg_parts.as_bytes();
+    let now = Instant::now();
     stream.write_all(bytes).await.unwrap();
 
     let mut response = [0; 12];
     stream.read_exact(&mut response).await.unwrap();
+    let elapsed = now.elapsed();
+    info!("Elapsed: {:.4?}", elapsed);
+
     assert_eq!(
         "PONG token\r\n".as_bytes(),
         &response
@@ -117,7 +122,7 @@ async fn test_message() {
     let mut client2 = TcpStream::connect(server_addr).await.unwrap();
     register(&mut client2, "nick2".to_string()).await;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
     write_message(&mut client1, &Message{
         prefix: None,
         content: Content::Command(Command::PrivMsg{
@@ -136,7 +141,9 @@ async fn test_message() {
 
 #[tokio::test]
 async fn test_channel() {
+    init_logger();
     let server_addr = start_server().await;
+    let now = Instant::now();
 
     let mut client1 = TcpStream::connect(server_addr).await.unwrap();
     register(&mut client1, "nick1".to_string()).await;
@@ -144,7 +151,8 @@ async fn test_channel() {
     let mut client2 = TcpStream::connect(server_addr).await.unwrap();
     register(&mut client2, "nick2".to_string()).await;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+
     write_message(&mut client1, &Message{
         prefix: None,
         content: Content::Command(Command::Join{
@@ -159,7 +167,7 @@ async fn test_channel() {
         &response
     );
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
     write_message(&mut client2, &Message{
         prefix: None,
         content: Content::Command(Command::Join{
@@ -175,7 +183,7 @@ async fn test_channel() {
     );
 
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
     write_message(&mut client1, &Message{
         prefix: None,
         content: Content::Command(Command::PrivMsg{
@@ -189,6 +197,6 @@ async fn test_channel() {
         ":nick1 PRIVMSG #channel1 11111111\r\n".as_bytes(),
         &response
     );
-
-
+    let elapsed = now.elapsed();
+    info!("Elapsed: {:.4?}", elapsed);
 }
