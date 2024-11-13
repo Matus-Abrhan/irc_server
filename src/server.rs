@@ -11,6 +11,7 @@ use tokio::time::{self, Duration};
 
 use crate::irc_core::connection::{Connection, ConnectionTxMap, ChannelMap};
 use crate::irc_core::message::Message;
+use crate::config::{Config, Server};
 // use crate::irc_core::error::IRCError;
 
 const BACKOFF_LIMIT: u64 = 64;
@@ -19,6 +20,7 @@ struct Listener {
     listener: TcpListener,
     connection_tx_map: ConnectionTxMap,
     channel_map: ChannelMap,
+    config: Config,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
     shutdown_complete_rx: mpsc::Receiver<()>,
@@ -27,6 +29,7 @@ struct Listener {
 struct Handler {
     connection: Connection,
     connection_rx: mpsc::Receiver<Message>,
+    config: Config,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
 }
@@ -55,6 +58,7 @@ impl Listener {
                     self.connection_tx_map.clone(),
                     self.channel_map.clone(),
                 ),
+                config: self.config.clone(),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
             };
@@ -129,7 +133,7 @@ impl Shutdown {
     }
 }
 
-pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()> {
+pub async fn run(listener: TcpListener, config: Config, shutdown: impl Future) -> Result<(), ()> {
     let (notify_shutdown, _) = broadcast::channel(1);
     let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
@@ -137,6 +141,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
         listener,
         connection_tx_map: Arc::new(Mutex::new(HashMap::new())),
         channel_map: Arc::new(Mutex::new(HashMap::new())),
+        config,
         notify_shutdown,
         shutdown_complete_tx,
         shutdown_complete_rx
@@ -160,13 +165,14 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
 }
 
 pub async fn start_server() -> SocketAddr {
+    let config = Config{server: Server{name: "server1".to_string(), port: 0, address_v4: "127.0.0.1".to_string()}};
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
         Err(e) => panic!("{}", e),
     };
     let server_addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        run(listener, tokio::signal::ctrl_c()).await
+        run(listener, config, tokio::signal::ctrl_c()).await
     });
 
     server_addr
