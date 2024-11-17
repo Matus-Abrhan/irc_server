@@ -4,15 +4,16 @@ use std::collections::HashMap;
 use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use bytes::{Buf, BytesMut};
-use log::{info, warn};
+use log::{debug, info, warn};
 
-use crate::irc_core::message::Message;
-use crate::irc_core::command::Command;
-use crate::irc_core::channel::Channel;
-use crate::irc_core::numeric::{Reply, ErrorReply};
-use crate::irc_core::message::Content;
-use crate::irc_core::error::IRCError;
+use irc_proto::message::{Message, Content, Write};
+use irc_proto::channel::Channel;
+use irc_proto::command::Command;
+use irc_proto::numeric::Numeric;
 
+use crate::message::*;
+use crate::error::IRCError;
+use crate::config::Config;
 
 pub type ConnectionTxMap = Arc<Mutex<HashMap<String, mpsc::Sender<Message>>>>;
 pub type ChannelMap = Arc<Mutex<HashMap<String, Channel>>>;
@@ -38,20 +39,24 @@ pub struct State {
 pub struct Connection {
     pub stream: TcpStream,
     pub address: SocketAddr,
+    pub config: Config,
     pub connection_tx_map: ConnectionTxMap,
     pub channel_map: ChannelMap,
     pub buffer: BytesMut,
+    pub buffer_out: BytesMut,
     pub state: State,
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream, address: SocketAddr, connection_tx_map: ConnectionTxMap, channel_map: ChannelMap) -> Connection {
+    pub fn new(stream: TcpStream, address: SocketAddr,config: Config, connection_tx_map: ConnectionTxMap, channel_map: ChannelMap) -> Connection {
         Connection {
             stream,
             address,
+            config,
             connection_tx_map,
             channel_map,
             buffer: BytesMut::with_capacity(1024 * 2),
+            buffer_out: BytesMut::with_capacity(1024 * 2),
             state: State{registration_state: RegistrationState::None,
                 nickname: String::new(),
                 username: String::new(),
@@ -81,54 +86,48 @@ impl Connection {
                     return Err(IRCError::ClientExited);
                 },
             };
-            info!("received bytes: {:?}", &self.buffer[..]);
+            // info!("received bytes: {:?}", &self.buffer[..]);
         }
     }
 
-    async fn _write_message(&mut self, message: &Message) {
-        let mut msg_parts = message.deserialize().join(" ");
-        msg_parts.push_str("\r\n");
-        let bytes = msg_parts.as_bytes();
+    async fn write_message(&mut self, message: Message) {
+        message.write(&mut self.buffer_out);
 
-        self.stream.write_all(bytes).await.unwrap();
-        info!("sent message: {:?}", &bytes[..]);
         self.flush_stream().await;
     }
 
-    pub async fn write_command(&mut self, command: &Command) {
-        self._write_message(&Message{
-            prefix: None,
-            content: Content::Command(command.clone()),
+    pub async fn write_command(&mut self, command: Command) {
+        self.write_message(Message{
+            prefix: Some(self.config.server.name.to_string()),
+            content: Content::Command(command),
         }).await;
     }
 
-    pub async fn write_error(&mut self, error: &ErrorReply) {
-        self._write_message(&Message{
-            prefix: None,
-            content: Content::ErrorReply(error.clone()),
-        }).await;
-    }
-
-    pub async fn write_reply(&mut self, reply: &Reply) {
-        self._write_message(&Message{
-            prefix: Some("server1".to_string()),
-            content: Content::Reply(reply.clone())
+    pub async fn write_numeric(&mut self, numeric: Numeric) {
+        self.write_message(Message{
+            prefix: Some(self.config.server.name.to_string()),
+            content: Content::Numeric(numeric),
         }).await;
     }
 
     pub async fn flush_stream(&mut self) {
         // TODO: setup ability to queue messages
+
+        debug!("server --> {:?}: {:?}",self.state.nickname, &self.buffer_out[..]);
+        self.stream.write_all(self.buffer_out.chunk()).await.unwrap();
+        self.buffer_out.clear();
         self.stream.flush().await.unwrap();
     }
 
     fn parse_frame(&mut self) -> Result<Option<Message>, IRCError> {
         let mut cursor = Cursor::new(self.buffer.chunk());
-        match Message::check(&mut cursor) {
-            Ok(msg) => {
+        match check_message(&mut cursor) {
+            Ok(msg_bytes) => {
+                debug!("{:?} --> server: {:?}",self.state.nickname, msg_bytes);
                 let len = cursor.position() as usize;
                 cursor.set_position(0);
 
-                let maby_messaage = Message::serialize(msg);
+                let maby_messaage = create_message(msg_bytes);
                 self.buffer.advance(len);
                 return Ok(maby_messaage);
             },
@@ -140,26 +139,26 @@ impl Connection {
 
     pub async fn write_response(&mut self, command: &Command) {
         match &command {
-            Command::Pass{password} => {
+            Command::PASS{password} => {
                 match self.state.registration_state {
                     RegistrationState::None => {
-                        if password == "blabla" { // Match connection password
+                        if password == "blabla" { // NOTE: Match connection password
                             self.state.registration_state = RegistrationState::PassReceived;
                         } else {
-                            self.write_error(&ErrorReply::PasswdMismatch{client: self.state.nickname.clone()}).await;
+                            self.write_numeric(Numeric::ERR_PASSWDMISMATCH{client: self.state.nickname.clone()}).await;
                         }
                     },
                     _ => {
-                        self.write_error(&ErrorReply::AlreadyRegistred{client: self.state.nickname.clone()}).await;
+                        self.write_numeric(Numeric::ERR_ALREADYREGISTERED{client: self.state.nickname.clone()}).await;
                     },
                 };
             },
 
-            Command::Nick{nickname} => {
+            Command::NICK{nickname} => {
                 let new_nick = nickname.to_string();
                 // TODO: check if contains disallowed characters (ERR_ERRONEUSNICKNAME)
                 if false {
-                    self.write_error(&ErrorReply::ErroneusNickname{client: self.state.nickname.clone(), nick: self.state.nickname.clone()}).await;
+                    self.write_numeric(Numeric::ERR_ERRONEUSNICKNAME{client: self.state.nickname.clone(), nick: self.state.nickname.clone()}).await;
                     return;
                 }
                 // TODO: check if nick in useed on network (ERR_NICKNAMEINUSE)
@@ -177,6 +176,7 @@ impl Connection {
                         }
                         drop(connection_tx_map);
 
+                        debug!("Registered user {}", self.state.nickname.to_string());
                         Some(RegistrationState::Registered)
                     },
                     _ => {
@@ -189,7 +189,7 @@ impl Connection {
                 }
             },
 
-            Command::User{user, realname, ..} => {
+            Command::USER{user, realname, ..} => {
                 match self.state.registration_state {
                     RegistrationState::PassReceived => {
                         self.state.registration_state = RegistrationState::UserReceived;
@@ -202,54 +202,55 @@ impl Connection {
                         drop(connection_tx_map);
 
                         self.state.registration_state = RegistrationState::Registered;
+                        debug!("Registered user {}", self.state.nickname.to_string());
                     },
                     _ => {
-                        self.write_error(&ErrorReply::AlreadyRegistred{client: self.state.nickname.clone()}).await;
+                        self.write_numeric(Numeric::ERR_ALREADYREGISTERED{client: self.state.nickname.clone()}).await;
                     }
                 }
                 self.state.username = user.to_string();
                 self.state.realname = realname.to_string();
             },
 
-            Command::Ping{token} => {
-                self.write_command(&Command::Pong{server: None, token: token.to_string()}).await;
+            Command::PING{token} => {
+                self.write_command(Command::PONG{server: None, token: token.to_string()}).await;
             },
 
-            Command::PrivMsg{targets, text} => {
+            Command::PRIVMSG{targets, text} => {
                 let target_arr: Vec<&str> = targets.split(',').collect();
 
                 // NOTE: sned to channel targets
                 // TODO: remake locking two mutexes in row
-                let channel_map = self.channel_map.lock().await;
-                let connection_tx_map = self.connection_tx_map.lock().await;
-                for (channel_name, channel) in channel_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
-                    for (_target, tx) in connection_tx_map.iter().filter(|(k, _v)| channel.members.contains(k) && **k != self.state.nickname) {
-                        // let prefix = format!("{}!{}@{}",
-                        //     self.state.nickname.to_string(),
-                        //     self.state.username.to_string(),
-                        //     "server1".to_string()
-                        // );
-                        let _ = tx.send(Message{
-                            prefix: Some(self.state.nickname.to_string()),
-                            // prefix: Some(prefix),
-                            content: Content::Command(Command::PrivMsg{
-                                targets: channel_name.to_string(),
-                                text: text.to_string()
-                            }),
-                        }).await;
-                    }
-                }
-                drop(connection_tx_map);
-                drop(channel_map);
+                {
+                    let channel_map = self.channel_map.lock().await;
+                    let filtered_channel_map = channel_map.iter().filter(|(chan_name, _chan)| target_arr.contains(&(*chan_name).as_str()));
 
+                    let connection_tx_map = self.connection_tx_map.lock().await;
+                    let filtered_tx_map: Vec<_> = connection_tx_map.iter().filter(|(target_name, _chan)| **target_name != self.state.nickname).collect();
+
+                    for (chan_name, chan) in filtered_channel_map {
+                        for (_target_name, tx) in filtered_tx_map.iter().filter(|(target_name, _tx)| chan.members.contains(target_name)) {
+                            let _ = tx.send(Message{
+                                prefix: Some(self.state.nickname.to_string()),
+                                content: Content::Command(Command::PRIVMSG{
+                                    targets: chan_name.to_string(),
+                                    text: text.to_string()
+                                }),
+                            }).await;
+                        }
+                    }
+                    drop(connection_tx_map);
+                    drop(channel_map);
+                }
 
                 // NOTE: sned to client targets
                 let connection_tx_map = self.connection_tx_map.lock().await;
-                for (target, tx) in connection_tx_map.iter().filter(|(k, _v)| target_arr.contains(&(*k).as_str())) {
+                let filtered_tx_map: Vec<_> = connection_tx_map.iter().filter(|(target_name, _chan)| **target_name != self.state.nickname).collect();
+                for (target_name, tx) in filtered_tx_map.iter() {
                     let _ = tx.send(Message{
                         prefix: Some(self.state.nickname.to_string()),
-                        content: Content::Command(Command::PrivMsg{
-                            targets: target.to_string(),
+                        content: Content::Command(Command::PRIVMSG{
+                            targets: target_name.to_string(),
                             text: text.to_string()
                         }),
                     }).await;
@@ -257,7 +258,7 @@ impl Connection {
                 drop(connection_tx_map);
             },
 
-            Command::Join{channels, ..} => {
+            Command::JOIN{channels, ..} => {
                 // TODO: check if user is registered
 
                 let mut to_members: Vec<Message> = Vec::new();
@@ -268,26 +269,23 @@ impl Connection {
                             (*channel).members.push(self.state.nickname.clone());
                         },
                         None => {
-                            assert_eq!(
-                                channel_map.insert(
+                            channel_map.insert(
+                                channel_name.to_string(),
+                                Channel::new(
                                     channel_name.to_string(),
-                                    Channel::new(
-                                        channel_name.to_string(),
-                                        self.state.nickname.clone(),
-                                    )
-                                ),
-                                None
+                                    self.state.nickname.clone(),
+                                )
                             );
                         },
                     };
                     let channel = channel_map.get_mut(channel_name).unwrap();
 
-                    // // TODO: MOTD
+                    // TODO: MOTD
                     // reply_vec.push(Reply::MotdStart{client: self.state.nickname.clone(), line: "server1".to_string()});
                     // reply_vec.push(Reply::Motd{client: self.state.nickname.clone(), line: "MOTD".to_string()});
                     // reply_vec.push(Reply::EndOfMotd{client: self.state.nickname.clone()});
-                    //
-                    // // TODO: List of users
+
+                    // TODO: List of users
                     // reply_vec.push(Reply::NameReply{
                     //     client: self.state.nickname.clone(),
                     //     symbol: '@',
@@ -298,15 +296,14 @@ impl Connection {
 
                     to_members.push(Message{
                         prefix: Some(self.state.nickname.to_string()),
-                        content: Content::Command(Command::Join{channels: channel.name.to_string(), keys: None})
+                        content: Content::Command(Command::JOIN{channels: channel.name.to_string(), keys: None})
                     });
                 };
-                warn!("{:?}", channel_map);
                 drop(channel_map);
 
                 // TODO: write to all channel memebers
                 for message in to_members {
-                    self._write_message(&message).await;
+                    self.write_message(message).await;
                 }
 
 
@@ -317,12 +314,12 @@ impl Connection {
 
             },
 
-            Command::Who{mask} => {
-                let mut reply_vec: Vec<Reply> = Vec::new();
+            Command::WHO{mask} => {
+                let mut reply_vec: Vec<Numeric> = Vec::new();
                 let channel_map = self.channel_map.lock().await;
                 if let Some(channel) = channel_map.get(mask) {
                     for member in channel.members.iter() {
-                        reply_vec.push(Reply::WhoReply{
+                        reply_vec.push(Numeric::RPL_WHOREPLY{
                             client: member.to_string(),
                             channel: channel.name.to_string(),
                             username: member.to_string(),
@@ -338,17 +335,17 @@ impl Connection {
                 drop(channel_map);
 
                 for reply in reply_vec {
-                    self.write_reply(&reply).await;
+                    self.write_numeric(reply).await;
                 }
 
-                self.write_reply(&Reply::EndOfWho{client: self.state.nickname.to_string(), mask: mask.to_string()}).await;
+                self.write_numeric(Numeric::RPL_ENDOFWHO{client: self.state.nickname.to_string(), mask: mask.to_string()}).await;
             },
 
             _ => {},
         }
     }
 
-    pub async fn process_client_result(&mut self, client_result: &Result<Option<Message>, IRCError>) -> Result<(), ()> {
+    pub async fn process_client_result(&mut self, client_result: Result<Option<Message>, IRCError>) -> Result<(), ()> {
         match client_result {
             Ok(maby_message) => {
                 match maby_message {
@@ -385,13 +382,7 @@ impl Connection {
         };
     }
 
-    pub async fn process_server_result(&mut self, server_result: &Message) {
-        // match server_result {
-        //     Ok(Some(message)) => {
-        //         self.write_message(&message).await;
-        //     },
-        //     _ => (),
-        // };
-        self._write_message(server_result).await;
+    pub async fn process_server_result(&mut self, server_result: Message) {
+        self.write_message(server_result).await;
     }
 }

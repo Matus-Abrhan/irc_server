@@ -1,0 +1,3 @@
+[submodule "irc_proto"]
+	path = irc_proto
+	url = git@github.com:Matus-Abrhan/irc_proto.git

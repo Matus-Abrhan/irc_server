@@ -193,11 +193,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "irc_proto"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+]
+
+[[package]]
 name = "irc_server"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "env_logger",
+ "irc_proto",
  "log",
  "serde",
  "serde_derive",

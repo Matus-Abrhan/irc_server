@@ -11,10 +11,12 @@ env_logger = {version = "0.11"}
 toml = "0.8.19"
 serde = "1.0.215"
 serde_derive = "1.0.215"
-# tokio = "1.41.1"
-# bytes = "1.8.0"
-# log = "0.4.22"
-# env_logger = "0.11.5"
+
+[workspace]
+members = [ "irc_proto"]
+
+[dependencies.irc_proto]
+path = "irc_proto"
 
 [[bin]]
 name = "server"

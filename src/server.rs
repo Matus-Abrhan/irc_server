@@ -4,15 +4,14 @@ use std::sync::Arc;
 use log::{info, warn};
 use std::collections::HashMap;
 
-// use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::{self, Duration};
 
-use crate::irc_core::connection::{Connection, ConnectionTxMap, ChannelMap};
-use crate::irc_core::message::Message;
+use irc_proto::message::Message;
+
+use crate::connection::{Connection, ConnectionTxMap, ChannelMap};
 use crate::config::{Config, Server};
-// use crate::irc_core::error::IRCError;
 
 const BACKOFF_LIMIT: u64 = 64;
 
@@ -29,7 +28,6 @@ struct Listener {
 struct Handler {
     connection: Connection,
     connection_rx: mpsc::Receiver<Message>,
-    config: Config,
     shutdown: Shutdown,
     _shutdown_complete: mpsc::Sender<()>,
 }
@@ -55,10 +53,10 @@ impl Listener {
                 connection: Connection::new(
                     stream,
                     address,
+                    self.config.clone(),
                     self.connection_tx_map.clone(),
                     self.channel_map.clone(),
                 ),
-                config: self.config.clone(),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
             };
@@ -95,12 +93,12 @@ impl Handler {
         while !self.shutdown.is_shutdown() {
             tokio::select! {
                 client_result = self.connection.read_message() => {
-                    self.connection.process_client_result(&client_result).await?;
+                    self.connection.process_client_result(client_result).await?;
                 },
 
                 server_result_option = self.connection_rx.recv() => {
                     if let Some(server_result) = server_result_option {
-                        self.connection.process_server_result(&server_result).await;
+                        self.connection.process_server_result(server_result).await;
                     }
                 },
 
