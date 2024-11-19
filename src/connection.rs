@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use bytes::{Buf, BytesMut};
-use log::{debug, info, warn};
+use log::{debug, warn};
 
 use irc_proto::message::{Message, Content, Write};
 use irc_proto::channel::Channel;
@@ -72,8 +72,8 @@ impl Connection {
                 Ok(m) => return Ok(m),
                 Err(e) => {
                     match e {
-                        IRCError::NoMessageLeftInBuffer => (),
                         IRCError::ClientExited => panic!("This should not happen"),
+                        _ => (),
                     }
                 },
             }
@@ -86,11 +86,11 @@ impl Connection {
                     return Err(IRCError::ClientExited);
                 },
             };
-            // info!("received bytes: {:?}", &self.buffer[..]);
         }
     }
 
     async fn write_message(&mut self, message: Message) {
+        debug!("server --> {:?}: {:?}",self.state.nickname, message);
         message.write(&mut self.buffer_out);
 
         self.flush_stream().await;
@@ -111,8 +111,6 @@ impl Connection {
     }
 
     pub async fn flush_stream(&mut self) {
-        // TODO: setup ability to queue messages
-
         debug!("server --> {:?}: {:?}",self.state.nickname, &self.buffer_out[..]);
         self.stream.write_all(self.buffer_out.chunk()).await.unwrap();
         self.buffer_out.clear();
@@ -121,20 +119,16 @@ impl Connection {
 
     fn parse_frame(&mut self) -> Result<Option<Message>, IRCError> {
         let mut cursor = Cursor::new(self.buffer.chunk());
-        match check_message(&mut cursor) {
-            Ok(msg_bytes) => {
-                debug!("{:?} --> server: {:?}",self.state.nickname, msg_bytes);
-                let len = cursor.position() as usize;
-                cursor.set_position(0);
+        let msg_bytes = check_message(&mut cursor)?;
 
-                let maby_messaage = create_message(msg_bytes);
-                self.buffer.advance(len);
-                return Ok(maby_messaage);
-            },
-            Err(e) => return Err(e),
-            // TODO: use ? operator
-        };
+        debug!("{:?} --> server: {:?}",self.state.nickname, msg_bytes);
+        let len = cursor.position() as usize;
+        cursor.set_position(0);
 
+        let maby_messaage = create_message(msg_bytes);
+        debug!("{:?} --> server: {:?}",self.state.nickname, maby_messaage);
+        self.buffer.advance(len);
+        return Ok(maby_messaage);
     }
 
     pub async fn write_response(&mut self, command: &Command) {
@@ -142,7 +136,7 @@ impl Connection {
             Command::PASS{password} => {
                 match self.state.registration_state {
                     RegistrationState::None => {
-                        if password == "blabla" { // NOTE: Match connection password
+                        if *password == self.config.server.password { // NOTE: Match connection password
                             self.state.registration_state = RegistrationState::PassReceived;
                         } else {
                             self.write_numeric(Numeric::ERR_PASSWDMISMATCH{client: self.state.nickname.clone()}).await;
@@ -176,7 +170,6 @@ impl Connection {
                         }
                         drop(connection_tx_map);
 
-                        debug!("Registered user {}", self.state.nickname.to_string());
                         Some(RegistrationState::Registered)
                     },
                     _ => {
@@ -202,7 +195,6 @@ impl Connection {
                         drop(connection_tx_map);
 
                         self.state.registration_state = RegistrationState::Registered;
-                        debug!("Registered user {}", self.state.nickname.to_string());
                     },
                     _ => {
                         self.write_numeric(Numeric::ERR_ALREADYREGISTERED{client: self.state.nickname.clone()}).await;
@@ -221,32 +213,28 @@ impl Connection {
 
                 // NOTE: sned to channel targets
                 // TODO: remake locking two mutexes in row
-                {
-                    let channel_map = self.channel_map.lock().await;
-                    let filtered_channel_map = channel_map.iter().filter(|(chan_name, _chan)| target_arr.contains(&(*chan_name).as_str()));
+                let channel_map = self.channel_map.lock().await;
+                let filtered_channel_map = channel_map.iter().filter(|(chan_name, _chan)| target_arr.contains(&(*chan_name).as_str()));
 
-                    let connection_tx_map = self.connection_tx_map.lock().await;
-                    let filtered_tx_map: Vec<_> = connection_tx_map.iter().filter(|(target_name, _chan)| **target_name != self.state.nickname).collect();
-
-                    for (chan_name, chan) in filtered_channel_map {
-                        for (_target_name, tx) in filtered_tx_map.iter().filter(|(target_name, _tx)| chan.members.contains(target_name)) {
-                            let _ = tx.send(Message{
-                                prefix: Some(self.state.nickname.to_string()),
-                                content: Content::Command(Command::PRIVMSG{
-                                    targets: chan_name.to_string(),
-                                    text: text.to_string()
-                                }),
-                            }).await;
-                        }
-                    }
-                    drop(connection_tx_map);
-                    drop(channel_map);
-                }
-
-                // NOTE: sned to client targets
                 let connection_tx_map = self.connection_tx_map.lock().await;
                 let filtered_tx_map: Vec<_> = connection_tx_map.iter().filter(|(target_name, _chan)| **target_name != self.state.nickname).collect();
-                for (target_name, tx) in filtered_tx_map.iter() {
+
+                for (chan_name, chan) in filtered_channel_map {
+                    for (_target_name, tx) in filtered_tx_map.iter().filter(|(target_name, _tx)| chan.members.contains(target_name)) {
+                        let _ = tx.send(Message{
+                            prefix: Some(self.state.nickname.to_string()),
+                            content: Content::Command(Command::PRIVMSG{
+                                targets: chan_name.to_string(),
+                                text: text.to_string()
+                            }),
+                        }).await;
+                    }
+                }
+                drop(channel_map);
+
+                // NOTE: sned to client targets
+                // TODO: should be client able to sentd message to himself ?
+                for (target_name, tx) in filtered_tx_map.iter().filter(|(target_name, _chan)| target_arr.contains(&(*target_name).as_str())) {
                     let _ = tx.send(Message{
                         prefix: Some(self.state.nickname.to_string()),
                         content: Content::Command(Command::PRIVMSG{
@@ -306,7 +294,6 @@ impl Connection {
                     self.write_message(message).await;
                 }
 
-
                 // TODO: write to client
                 // for reply in reply_vec {
                 //     self.write_reply(&reply).await;
@@ -315,6 +302,7 @@ impl Connection {
             },
 
             Command::WHO{mask} => {
+                // TODO: fill out base on config
                 let mut reply_vec: Vec<Numeric> = Vec::new();
                 let channel_map = self.channel_map.lock().await;
                 if let Some(channel) = channel_map.get(mask) {
@@ -348,14 +336,12 @@ impl Connection {
     pub async fn process_client_result(&mut self, client_result: Result<Option<Message>, IRCError>) -> Result<(), ()> {
         match client_result {
             Ok(maby_message) => {
-                match maby_message {
-                    Some(message) => {
-                        if let Content::Command(command) = &message.content {
-                            self.write_response(&command).await
-                        }
-                        // TODO: ErrorReply field need to be filled out
-                    },
-                    None => {},
+                if let Some(message) = maby_message {
+                    match message.content {
+                        Content::Command(command) => self.write_response(&command).await,
+                        Content::Numeric(_numeric) => {},
+                        Content::Unknown() => {},
+                    }
                 };
                 return Ok(());
             },

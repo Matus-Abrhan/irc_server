@@ -163,7 +163,10 @@ pub async fn run(listener: TcpListener, config: Config, shutdown: impl Future) -
 }
 
 pub async fn start_server() -> SocketAddr {
-    let config = Config{server: Server{name: "server1".to_string(), port: 0, address_v4: "127.0.0.1".to_string()}};
+    let config = Config{server: Server{
+        name: "server1".to_string(), password: "password".to_string(),
+        port: 0, address_v4: "127.0.0.1".to_string()}
+    };
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
         Err(e) => panic!("{}", e),

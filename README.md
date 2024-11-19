@@ -1,12 +1,8 @@
 # irc_server
 
-- src
-    - irc_proto
-        submodule with IRC protocol
-    - bin
-        binary
-    - server
-    - connection
-    - error
-    - lib
-    - **config**
+### Features
+- [x] private message
+- [x] channel message
+- [ ] tls
+- [ ] server to server communication
+

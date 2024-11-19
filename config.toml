@@ -1,5 +1,6 @@
 [server]
 name = "server1"
+password = "password"
 
 address_v4 = "127.0.0.1"
 port = 6697

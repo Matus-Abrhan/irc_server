@@ -13,8 +13,6 @@ async fn main() -> Result<(), ()> {
     env_logger::init();
 
     let config = Config::read("config.toml");
-
-    // let server_addr: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6697);
     let server_addr: SocketAddr = SocketAddr::new(IpAddr::V4(config.server.address_v4.parse().expect("IP parse failed")), config.server.port);
 
     let listener = match TcpListener::bind(server_addr).await {

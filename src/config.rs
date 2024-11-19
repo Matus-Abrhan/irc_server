@@ -12,6 +12,7 @@ pub struct Config {
 #[derive(Deserialize, Clone)]
 pub struct Server {
     pub name: String,
+    pub password: String,
 
     pub address_v4: String,
     pub port: u16,

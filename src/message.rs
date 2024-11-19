@@ -39,9 +39,9 @@ fn get_message<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], IRCError> {
 
     for i in start..end {
         if src.get_ref()[i] == b'\r' && src.get_ref()[i+1] == b'\n' {
-            // if (i+1) - start > 512 {
-            //     return Err(IRCError::SilentDiscard);
-            // }
+            if (i+1) - start > 512 {
+                return Err(IRCError::LengthExceeded);
+            }
             src.set_position((i+2)as u64);
             return Ok(&src.get_ref()[start..i]);
         }

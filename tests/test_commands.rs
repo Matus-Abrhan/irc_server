@@ -12,16 +12,6 @@ fn init_logger() {
     let _ = env_logger::builder().is_test(true).try_init();
 }
 
-// async fn write_message(stream: &mut TcpStream, message: &Message) {
-//     let mut msg_parts = message.deserialize().join(" ");
-//     msg_parts.push_str("\r\n");
-//     let bytes = msg_parts.as_bytes();
-//     info!("messages parts: {}", msg_parts);
-//
-//     stream.write_all(bytes).await.unwrap();
-//     stream.flush().await.unwrap();
-// }
-
 async fn write_message(stream: &mut TcpStream, message: Message) {
     let mut buffer = BytesMut::with_capacity(1024 * 2);
     message.write(&mut buffer);
@@ -30,25 +20,11 @@ async fn write_message(stream: &mut TcpStream, message: Message) {
     stream.flush().await.unwrap();
 }
 
-// pub async fn write_command(&mu command: Command) {
-//     write_message(Message{
-//         prefix: Some(self.config.server.name.to_string()),
-//         content: Content::Command(command),
-//     }).await;
-// }
-//
-// pub async fn write_numeric(&mut self, numeric: Numeric) {
-//     self.write_message(Message{
-//         prefix: Some(self.config.server.name.to_string()),
-//         content: Content::Numeric(numeric),
-//     }).await;
-// }
-
 async fn register(stream: &mut TcpStream, nickname: String) {
     write_message(stream, Message{
         prefix: None,
         content: Content::Command(Command::PASS{
-            password: "blabla".to_string()
+            password: "password".to_string()
         }),
     }).await;
 
@@ -74,12 +50,7 @@ async fn test_ping() {
     let addr = start_server().await;
     let mut stream = TcpStream::connect(addr).await.unwrap();
 
-    // let mut msg_parts = Message{prefix: None, content: Content::Command(Command::PING{token: "token".to_string()})}.deserialize().join(" ");
-    // msg_parts.push_str("\r\n");
-    // let bytes = msg_parts.as_bytes();
-    // let now = Instant::now();
-    // stream.write_all(bytes).await.unwrap();
-    //
+    let now = Instant::now();
     write_message(&mut stream, Message{
         prefix: None,
         content: Content::Command(
@@ -89,8 +60,8 @@ async fn test_ping() {
 
     let mut response = [0; 21];
     stream.read_exact(&mut response).await.unwrap();
-    // let elapsed = now.elapsed();
-    // info!("Elapsed: {:.4?}", elapsed);
+    let elapsed = now.elapsed();
+    info!("Elapsed: {:.4?}", elapsed);
 
     assert_eq!(
         ":server1 PONG token\r\n".as_bytes(),
@@ -152,7 +123,7 @@ async fn test_message() {
     let mut client2 = TcpStream::connect(server_addr).await.unwrap();
     register(&mut client2, "nick2".to_string()).await;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+    tokio::time::sleep(tokio::time::Duration::from_micros(1)).await;
     write_message(&mut client1, Message{
         prefix: None,
         content: Content::Command(Command::PRIVMSG{
@@ -181,8 +152,6 @@ async fn test_channel() {
     let mut client2 = TcpStream::connect(server_addr).await.unwrap();
     register(&mut client2, "nick2".to_string()).await;
 
-    // tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-
     write_message(&mut client1, Message{
         prefix: None,
         content: Content::Command(Command::JOIN{
@@ -197,7 +166,6 @@ async fn test_channel() {
         &response
     );
 
-    // tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
     write_message(&mut client2, Message{
         prefix: None,
         content: Content::Command(Command::JOIN{
@@ -212,8 +180,6 @@ async fn test_channel() {
         &response
     );
 
-
-    // tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
     write_message(&mut client1, Message{
         prefix: None,
         content: Content::Command(Command::PRIVMSG{
