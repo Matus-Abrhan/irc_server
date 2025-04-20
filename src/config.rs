@@ -1,8 +1,16 @@
 use std::fs::read_to_string;
+use std::net::IpAddr;
 use std::process::exit;
+use once_cell::sync::Lazy;
+use std::sync::{Arc, Mutex};
 
 use toml;
 use serde_derive::Deserialize;
+
+pub static CONFIG: Lazy<Arc<Mutex<Config>>> = Lazy::new(|| {
+    Arc::new(Mutex::new(Config::new("config.toml")))
+});
+
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
@@ -14,12 +22,12 @@ pub struct Server {
     pub name: String,
     pub password: String,
 
-    pub address_v4: String,
+    pub address_v4: IpAddr,
     pub port: u16,
 }
 
 impl Config {
-    pub fn read(path: &str) -> Self {
+    pub fn new(path: &str) -> Self {
         let contents  = match read_to_string(path) {
             Ok(c) => c,
             Err(_) => {
