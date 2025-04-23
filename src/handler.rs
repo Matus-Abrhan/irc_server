@@ -1,22 +1,36 @@
 use irc_proto::types::{Command::{self, *}, Message, Source};
 use irc_proto::connection::Connection;
-use log::info;
+use log::{info, warn};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::{config::CONFIG, user::{RegistrationFlags, User}};
+use crate::{bridge::{CommMsg, OperMsg}, config::CONFIG, user::{RegistrationFlags, User}};
 
 
 pub struct Handler {
     pub connection: Connection,
     handler_rx: mpsc::Receiver<Message>,
+    bridge_tx: mpsc::Sender<CommMsg>,
+    channel_tx: mpsc::Sender<OperMsg>,
     user: User,
     shutdown: broadcast::Receiver<()>,
     _running: bool,
 }
 
 impl Handler {
-    pub fn new(connection: Connection, handler_rx: mpsc::Receiver<Message>, shutdown: broadcast::Receiver<()>) -> Self {
-        return Handler { connection, handler_rx, user: User::new(), shutdown, _running: true }
+
+    pub fn new(
+        connection: Connection,
+        bridge_tx: mpsc::Sender<CommMsg>,
+        channel_tx: mpsc::Sender<OperMsg>,
+        shutdown: broadcast::Receiver<()>,
+    ) -> Self {
+        let (_handler_tx, handler_rx) = mpsc::channel(1);
+        return Handler { connection, handler_rx, bridge_tx, channel_tx, user: User::new(), shutdown, _running: true }
+    }
+
+    async fn shutdown(&mut self) {
+        self.connection.shutdown().await;
+
     }
 
     pub async fn run(&mut self) -> Result<(), ()> {
@@ -26,16 +40,31 @@ impl Handler {
                     info!("client message");
                     match client_message {
                         Ok(msg) => self.process_message(msg).await,
-                        Err(_) => return Err(()),
+                        Err(_) => {
+                            self.shutdown().await;
+                            return Err(())
+                        },
                     }
                 }
 
                 server_message = self.handler_rx.recv() => {
-                    info!("server message");
+                    match server_message {
+                        Some(message) => {
+                            match message.command {
+                                PRIVMSG { .. } => {
+                                    let _ = self.connection.write(message).await;
+                                },
+
+                                _ => {},
+                            }
+                        },
+                        None => {},
+                    }
                 }
 
                 _ = self.shutdown.recv() => {
                     info!("shutdown signal");
+                    self.shutdown().await;
                     return Err(());
                 },
             };
@@ -91,7 +120,12 @@ impl Handler {
                     self.user.nickname = nickname;
                     self.user.register_state |= RegistrationFlags::NICK;
                     if self.user.register_state.contains(RegistrationFlags::USER) {
-                        // TODO: add handle for client
+                        let (handler_tx, handler_rx) = mpsc::channel(1);
+                        self.handler_rx = handler_rx;
+                        let _ = self.channel_tx.send(OperMsg::AddChannel{
+                            name: self.user.username.clone(),
+                            channel: handler_tx,
+                        }).await;
                     }
                 }
             },
@@ -101,12 +135,20 @@ impl Handler {
                     self.user.realname = realname;
                     self.user.register_state |= RegistrationFlags::NICK;
                     if self.user.register_state.contains(RegistrationFlags::NICK) {
-                        // TODO: add handle for client
+                        let (handler_tx, handler_rx) = mpsc::channel(1);
+                        self.handler_rx = handler_rx;
+                        let _ = self.channel_tx.send(OperMsg::AddChannel{
+                            name: self.user.username.clone(),
+                            channel: handler_tx,
+                        }).await;
                     }
                 }
             }
-            PRIVMSG { targets, text } => {
-
+            PRIVMSG { .. } => {
+                let _ = self.bridge_tx.send(CommMsg{
+                    user: self.user.clone(),
+                    msg: msg.clone(),
+                }).await;
             },
 
             _ => {},

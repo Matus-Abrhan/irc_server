@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 
 bitflags! {
+    #[derive(Debug, Clone)]
     pub struct RegistrationFlags: u8 {
         const NONE = 0b00000000;
         const PASS = 0b00000001;
@@ -9,6 +10,7 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct User {
     pub username: String,
     pub nickname: String,

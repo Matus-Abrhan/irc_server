@@ -1,41 +1,34 @@
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use log::{info, warn};
 use std::collections::HashMap;
 
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{self, Duration};
 
 use irc_proto::types::Message;
 use irc_proto::connection::Connection;
 
+use crate::bridge::{Bridge, CommMsg, OperMsg};
 use crate::handler::Handler;
 
 const BACKOFF_LIMIT: u64 = 64;
-pub type MessageReceiverMap = Arc<Mutex<HashMap<String, mpsc::Sender<Message>>>>;
 
 struct Listener {
     listener: TcpListener,
-    handler_tx_map: MessageReceiverMap,
     notify_shutdown: broadcast::Sender<()>,
 }
 
 impl Listener {
-    async fn run(&self) -> Result<(), ()> {
+    async fn run(&self, bridge_tx: mpsc::Sender<CommMsg>, channel_tx: mpsc::Sender<OperMsg>) -> Result<(), ()> {
         loop {
             let (stream, address) = self.accept().await?;
 
-            // TODO: move to user registration
-            let (handler_tx, handler_rx) = mpsc::channel(1);
-            let mut receiver_map = self.handler_tx_map.lock().await;
-            receiver_map.insert("".to_string(), handler_tx);
-            drop(receiver_map);
-
             let mut handler = Handler::new(
                 Connection::new(stream, address),
-                handler_rx,
+                bridge_tx.clone(),
+                channel_tx.clone(),
                 self.notify_shutdown.subscribe(),
             );
             info!("{:} connected", handler.connection.address());
@@ -69,15 +62,26 @@ impl Listener {
 
 pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()> {
     let (notify_shutdown, _) = broadcast::channel(1);
+    let (channels_tx, channels_rx) = mpsc::channel(1);
+    let (bridge_tx, bridge_rx) = mpsc::channel(1);
 
-    // let (server_tx, server_rx) = mpsc::channel(1);
     let server = Listener {
         listener,
-        handler_tx_map: Arc::new(Mutex::new(HashMap::new())),
         notify_shutdown,
     };
+    let mut bridge = Bridge {
+        channels_rx,
+        handler_tx_map: HashMap::new(),
+        bridge_rx,
+    };
+
+    tokio::spawn(async move {
+        if (bridge.run().await).is_err() {
+        }
+    });
+
     tokio::select! {
-        _ = server.run() => {}
+        _ = server.run(bridge_tx, channels_tx) => {}
         _ = shutdown => {}
     }
 

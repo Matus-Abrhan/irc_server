@@ -1,52 +1,54 @@
-use irc_proto::types::{Command, Message};
+use irc_proto::{enable_logging, types::{Command, Message}};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, time::sleep};
 use log::info;
 use std::time::{Duration, Instant};
+use serial_test::serial;
 
 use irc_server::server::start_server;
 
 
-// async fn write_message(stream: &mut TcpStream, message: Message) {
-//     // let mut buffer = BytesMut::with_capacity(1024 * 2);
-//     // message.write(&mut buffer);
-//
-//     // stream.write_all(buffer.chunk()).await.unwrap();
-//     // stream.flush().await.unwrap();
-// }
+async fn register(stream: &mut TcpStream, nickname: String) {
+    stream.write_all(
+        Message{
+            tags: None,
+            source: None,
+            command: Command::PASS { password: "password".to_string() }
+        }.to_bytes().as_bytes()
+    ).await.unwrap();
 
-// async fn register(stream: &mut TcpStream, nickname: String) {
-//     // write_message(stream, Message{
-//     //     prefix: None,
-//     //     content: Content::Command(Command::PASS{
-//     //         password: "password".to_string()
-//     //     }),
-//     // }).await;
-//     //
-//     // write_message(stream, Message{
-//     //     prefix: None,
-//     //     content: Content::Command(Command::NICK{nickname: nickname.clone()}),
-//     // }).await;
-//     //
-//     // write_message(stream, Message{
-//     //     prefix: None,
-//     //     content: Content::Command(Command::USER{
-//     //         user: nickname.clone(),
-//     //         mode: "0".to_string(),
-//     //         unused: "*".to_string(),
-//     //         realname: nickname.clone(),
-//     //     }),
-//     // }).await;
-// }
+    stream.write_all(
+        Message{
+            tags: None,
+            source: None,
+            command: Command::NICK { nickname: nickname.clone() }
+        }.to_bytes().as_bytes()
+    ).await.unwrap();
 
+    stream.write_all(
+        Message{
+            tags: None,
+            source: None,
+            command: Command::USER {
+                user: nickname.clone(),
+                mode: "0".to_string(),
+                unused: "*".to_string(),
+                realname: nickname.clone(),
+            }
+        }.to_bytes().as_bytes()
+    ).await.unwrap();
+}
+
+#[serial]
 #[tokio::test]
 async fn test_ping() {
+    enable_logging();
     let addr = start_server().await;
     let mut stream = TcpStream::connect(addr).await.unwrap();
 
     let now = Instant::now();
 
     let message = Message { tags: None, source: None, command: Command::PING { token: "token".to_string() } };
-    stream.write(message.to_bytes().as_bytes()).await.unwrap();
+    stream.write_all(message.to_bytes().as_bytes()).await.unwrap();
     let mut response = [0; 21];
     stream.read_exact(&mut response).await.unwrap();
 
@@ -58,6 +60,7 @@ async fn test_ping() {
     );
 }
 
+#[serial]
 #[tokio::test]
 async fn test_ping_multiple() {
     let addr = start_server().await;
@@ -79,6 +82,7 @@ async fn test_ping_multiple() {
     );
 }
 
+#[serial]
 #[tokio::test]
 async fn test_invalid_message() {
     let addr = start_server().await;
@@ -100,6 +104,7 @@ async fn test_invalid_message() {
     );
 }
 
+#[serial]
 #[tokio::test]
 async fn test_partial() {
     let addr = start_server().await;
@@ -116,33 +121,38 @@ async fn test_partial() {
     );
 }
 
-// #[tokio::test]
-// async fn test_message() {
-//     let server_addr = start_server().await;
-//
-//     let mut client1 = TcpStream::connect(server_addr).await.unwrap();
-//     register(&mut client1, "nick1".to_string()).await;
-//
-//     let mut client2 = TcpStream::connect(server_addr).await.unwrap();
-//     register(&mut client2, "nick2".to_string()).await;
-//
-//     tokio::time::sleep(tokio::time::Duration::from_micros(1)).await;
-//     // write_message(&mut client1, Message{
-//     //     prefix: None,
-//     //     content: Content::Command(Command::PRIVMSG{
-//     //         targets: "nick2".to_string(),
-//     //         text: "11111111".to_string(),
-//     //     }),
-//     // }).await;
-//
-//     let mut response = [0; 31];
-//     client2.read(&mut response).await.unwrap();
-//     assert_eq!(
-//         ":nick1 PRIVMSG nick2 11111111\r\n".as_bytes(),
-//         &response
-//     );
-// }
-//
+#[serial]
+#[tokio::test]
+async fn test_message() {
+    let server_addr = start_server().await;
+
+    let mut client1 = TcpStream::connect(server_addr).await.unwrap();
+    register(&mut client1, "nick1".to_string()).await;
+
+    let mut client2 = TcpStream::connect(server_addr).await.unwrap();
+    register(&mut client2, "nick2".to_string()).await;
+
+    tokio::time::sleep(tokio::time::Duration::from_micros(1)).await;
+
+    client1.write_all(
+        Message{
+            tags: None,
+            source: None,
+            command: Command::PRIVMSG {
+                targets: "nick2".to_string(),
+                text: "hello".to_string(),
+            }
+        }.to_bytes().as_bytes()
+    ).await.unwrap();
+
+    let mut response = [0; 28];
+    client2.read(&mut response).await.unwrap();
+    assert_eq!(
+        ":nick1 PRIVMSG nick2 hello\r\n".as_bytes(),
+        &response
+    );
+}
+
 // #[tokio::test]
 // async fn test_channel() {
 //     init_logger();
