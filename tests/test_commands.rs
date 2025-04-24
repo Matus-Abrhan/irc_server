@@ -153,59 +153,69 @@ async fn test_message() {
     );
 }
 
-// #[tokio::test]
-// async fn test_channel() {
-//     init_logger();
-//     let server_addr = start_server().await;
-//     let now = Instant::now();
-//
-//     let mut client1 = TcpStream::connect(server_addr).await.unwrap();
-//     register(&mut client1, "nick1".to_string()).await;
-//
-//     let mut client2 = TcpStream::connect(server_addr).await.unwrap();
-//     register(&mut client2, "nick2".to_string()).await;
-//
-//     // write_message(&mut client1, Message{
-//     //     prefix: None,
-//     //     content: Content::Command(Command::JOIN{
-//     //         channels: "#channel1".to_string(),
-//     //         keys: None,
-//     //     }),
-//     // }).await;
-//     let mut response = [0; 23];
-//     client1.read(&mut response).await.unwrap();
-//     assert_eq!(
-//         ":nick1 JOIN #channel1\r\n".as_bytes(),
-//         &response
-//     );
-//
-//     // write_message(&mut client2, Message{
-//     //     prefix: None,
-//     //     content: Content::Command(Command::JOIN{
-//     //         channels: "#channel1".to_string(),
-//     //         keys: None,
-//     //     }),
-//     // }).await;
-//     let mut response = [0; 23];
-//     client2.read(&mut response).await.unwrap();
-//     assert_eq!(
-//         ":nick2 JOIN #channel1\r\n".as_bytes(),
-//         &response
-//     );
-//
-//     // write_message(&mut client1, Message{
-//     //     prefix: None,
-//     //     content: Content::Command(Command::PRIVMSG{
-//     //         targets: "#channel1".to_string(),
-//     //         text: "11111111".to_string(),
-//     //     }),
-//     // }).await;
-//     let mut response = [0; 35];
-//     client2.read(&mut response).await.unwrap();
-//     assert_eq!(
-//         ":nick1 PRIVMSG #channel1 11111111\r\n".as_bytes(),
-//         &response
-//     );
-//     let elapsed = now.elapsed();
-//     info!("Elapsed: {:.4?}", elapsed);
-// }
+#[serial]
+#[tokio::test]
+async fn test_channel() {
+    enable_logging();
+    let server_addr = start_server().await;
+    let now = Instant::now();
+
+    let mut client1 = TcpStream::connect(server_addr).await.unwrap();
+    register(&mut client1, "nick1".to_string()).await;
+
+    let mut client2 = TcpStream::connect(server_addr).await.unwrap();
+    register(&mut client2, "nick2".to_string()).await;
+
+    client1.write_all(
+        Message{
+            tags: None,
+            source: None,
+            command: Command::JOIN{
+                channels: "#channel1".to_string(),
+                keys: None,
+            }
+        }.to_bytes().as_bytes()
+    ).await.unwrap();
+    let mut response = [0; 23];
+    client1.read(&mut response).await.unwrap();
+    assert_eq!(
+        ":nick1 JOIN #channel1\r\n".as_bytes(),
+        &response
+    );
+
+    client2.write_all(
+        Message{
+            tags: None,
+            source: None,
+            command: Command::JOIN{
+                channels: "#channel1".to_string(),
+                keys: None,
+            }
+        }.to_bytes().as_bytes()
+    ).await.unwrap();
+    let mut response = [0; 23];
+    client2.read(&mut response).await.unwrap();
+    assert_eq!(
+        ":nick2 JOIN #channel1\r\n".as_bytes(),
+        &response
+    );
+
+    client1.write_all(
+        Message{
+            tags: None,
+            source: None,
+            command: Command::PRIVMSG{
+                targets: "#channel1".to_string(),
+                text: "hello".to_string(),
+            }
+        }.to_bytes().as_bytes()
+    ).await.unwrap();
+    let mut response = [0; 32];
+    client2.read(&mut response).await.unwrap();
+    assert_eq!(
+        ":nick1 PRIVMSG #channel1 hello\r\n".as_bytes(),
+        &response
+    );
+    let elapsed = now.elapsed();
+    info!("Elapsed: {:.4?}", elapsed);
+}

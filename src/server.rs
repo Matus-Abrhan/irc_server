@@ -1,13 +1,11 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use log::{info, warn};
-use std::collections::HashMap;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{self, Duration};
 
-use irc_proto::types::Message;
 use irc_proto::connection::Connection;
 
 use crate::bridge::{Bridge, CommMsg, OperMsg};
@@ -21,14 +19,14 @@ struct Listener {
 }
 
 impl Listener {
-    async fn run(&self, bridge_tx: mpsc::Sender<CommMsg>, channel_tx: mpsc::Sender<OperMsg>) -> Result<(), ()> {
+    async fn run(&self, oper_tx: mpsc::Sender<OperMsg>, comm_tx: mpsc::Sender<CommMsg>) -> Result<(), ()> {
         loop {
             let (stream, address) = self.accept().await?;
 
             let mut handler = Handler::new(
                 Connection::new(stream, address),
-                bridge_tx.clone(),
-                channel_tx.clone(),
+                oper_tx.clone(),
+                comm_tx.clone(),
                 self.notify_shutdown.subscribe(),
             );
             info!("{:} connected", handler.connection.address());
@@ -62,18 +60,14 @@ impl Listener {
 
 pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()> {
     let (notify_shutdown, _) = broadcast::channel(1);
-    let (channels_tx, channels_rx) = mpsc::channel(1);
-    let (bridge_tx, bridge_rx) = mpsc::channel(1);
+    let (oper_tx, oper_rx) = mpsc::channel(1);
+    let (comm_tx, comm_rx) = mpsc::channel(1);
 
     let server = Listener {
         listener,
         notify_shutdown,
     };
-    let mut bridge = Bridge {
-        channels_rx,
-        handler_tx_map: HashMap::new(),
-        bridge_rx,
-    };
+    let mut bridge = Bridge::new(oper_rx, comm_rx);
 
     tokio::spawn(async move {
         if (bridge.run().await).is_err() {
@@ -81,7 +75,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<(), ()>
     });
 
     tokio::select! {
-        _ = server.run(bridge_tx, channels_tx) => {}
+        _ = server.run(oper_tx, comm_tx) => {}
         _ = shutdown => {}
     }
 

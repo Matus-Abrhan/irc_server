@@ -1,6 +1,6 @@
 use irc_proto::types::{Command::{self, *}, Message, Source};
 use irc_proto::connection::Connection;
-use log::{info, warn};
+use log::info;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{bridge::{CommMsg, OperMsg}, config::CONFIG, user::{RegistrationFlags, User}};
@@ -9,8 +9,8 @@ use crate::{bridge::{CommMsg, OperMsg}, config::CONFIG, user::{RegistrationFlags
 pub struct Handler {
     pub connection: Connection,
     handler_rx: mpsc::Receiver<Message>,
-    bridge_tx: mpsc::Sender<CommMsg>,
-    channel_tx: mpsc::Sender<OperMsg>,
+    oper_tx: mpsc::Sender<OperMsg>,
+    comm_tx: mpsc::Sender<CommMsg>,
     user: User,
     shutdown: broadcast::Receiver<()>,
     _running: bool,
@@ -20,12 +20,12 @@ impl Handler {
 
     pub fn new(
         connection: Connection,
-        bridge_tx: mpsc::Sender<CommMsg>,
-        channel_tx: mpsc::Sender<OperMsg>,
+        oper_tx: mpsc::Sender<OperMsg>,
+        comm_tx: mpsc::Sender<CommMsg>,
         shutdown: broadcast::Receiver<()>,
     ) -> Self {
         let (_handler_tx, handler_rx) = mpsc::channel(1);
-        return Handler { connection, handler_rx, bridge_tx, channel_tx, user: User::new(), shutdown, _running: true }
+        return Handler { connection, handler_rx, oper_tx, comm_tx, user: User::new(), shutdown, _running: true }
     }
 
     async fn shutdown(&mut self) {
@@ -51,11 +51,9 @@ impl Handler {
                     match server_message {
                         Some(message) => {
                             match message.command {
-                                PRIVMSG { .. } => {
+                                _ => {
                                     let _ = self.connection.write(message).await;
                                 },
-
-                                _ => {},
                             }
                         },
                         None => {},
@@ -122,7 +120,7 @@ impl Handler {
                     if self.user.register_state.contains(RegistrationFlags::USER) {
                         let (handler_tx, handler_rx) = mpsc::channel(1);
                         self.handler_rx = handler_rx;
-                        let _ = self.channel_tx.send(OperMsg::AddChannel{
+                        let _ = self.oper_tx.send(OperMsg::AddUser{
                             name: self.user.username.clone(),
                             channel: handler_tx,
                         }).await;
@@ -137,7 +135,7 @@ impl Handler {
                     if self.user.register_state.contains(RegistrationFlags::NICK) {
                         let (handler_tx, handler_rx) = mpsc::channel(1);
                         self.handler_rx = handler_rx;
-                        let _ = self.channel_tx.send(OperMsg::AddChannel{
+                        let _ = self.oper_tx.send(OperMsg::AddUser{
                             name: self.user.username.clone(),
                             channel: handler_tx,
                         }).await;
@@ -145,10 +143,20 @@ impl Handler {
                 }
             }
             PRIVMSG { .. } => {
-                let _ = self.bridge_tx.send(CommMsg{
+                let _ = self.comm_tx.send(CommMsg{
                     user: self.user.clone(),
-                    msg: msg.clone(),
+                    msg,
                 }).await;
+            },
+            JOIN { channels, keys } => {
+                if self.user.register_state.contains(RegistrationFlags::PASS & RegistrationFlags::NICK & RegistrationFlags::USER) {
+                    for channel in channels.split(',') {
+                        let _ = self.oper_tx.send(OperMsg::JoinChannel{
+                            nickname: self.user.nickname.clone(),
+                            channel_name: channel.to_string(),
+                        }).await;
+                    }
+                }
             },
 
             _ => {},
